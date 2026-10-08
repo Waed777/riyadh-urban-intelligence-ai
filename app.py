@@ -1,18 +1,14 @@
-import math
-
-import pandas as pd
-import plotly.express as px
-import requests
 import streamlit as st
+import pandas as pd
+import numpy as np
+import requests
+import plotly.express as px
 
-from ml_engine import (
-    segment_zones,
-    train_explainability_model
-)
+from ml_engine import segment_zones, train_explainability_model
 
- 
+
 # ============================================================
-# RIYADH URBAN INTELLIGENCE AI
+# CONFIG
 # ============================================================
 
 st.set_page_config(
@@ -21,14 +17,18 @@ st.set_page_config(
     layout="wide"
 )
 
+st.title("🇸🇦 Riyadh Urban Intelligence AI")
+st.caption(
+    "AI-powered geospatial intelligence and location decision support for Riyadh"
+)
+
 
 # ============================================================
-# CONFIGURATION
+# DATA
 # ============================================================
 
-RCRC_API = (
-    "https://opendata.rcrc.gov.sa/"
-    "api/explore/v2.1/catalog/datasets/"
+API_URL = (
+    "https://opendata.rcrc.gov.sa/api/explore/v2.1/catalog/datasets/"
     "metro-stations-in-riyadh-by-metro-line-and-station-type-2024/"
     "records"
 )
@@ -37,595 +37,631 @@ RIYADH_LAT = 24.7136
 RIYADH_LON = 46.6753
 
 
-# ============================================================
-# GEOSPATIAL FUNCTIONS
-# ============================================================
-
-def haversine_km(lat1, lon1, lat2, lon2):
-
-    radius = 6371.0
-
-    p1 = math.radians(lat1)
-    p2 = math.radians(lat2)
-
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-
-    a = (
-        math.sin(dlat / 2) ** 2
-        + math.cos(p1)
-        * math.cos(p2)
-        * math.sin(dlon / 2) ** 2
-    )
-
-    return 2 * radius * math.asin(
-        math.sqrt(a)
-    )
-
-
-def calculate_accessibility_score(distance_km):
-
-    score = 100 * math.exp(
-        -distance_km / 2.0
-    )
-
-    return round(
-        max(0, min(100, score)),
-        2
-    )
-
-
-def classify_zone(score):
-
-    if score >= 70:
-        return "High Accessibility"
-
-    elif score >= 40:
-        return "Medium Accessibility"
-
-    return "Low Accessibility"
-
-
-# ============================================================
-# RCRC DATA
-# ============================================================
-
-@st.cache_data(ttl=3600)
+@st.cache_data
 def load_metro_data():
 
     response = requests.get(
-        RCRC_API,
+        API_URL,
         params={"limit": 100},
         timeout=30
     )
 
     response.raise_for_status()
 
-    records = response.json().get(
-        "results",
-        []
-    )
-
-    if not records:
-        raise ValueError(
-            "RCRC returned no metro station records."
-        )
+    records = response.json()["results"]
 
     rows = []
 
-    for item in records:
+    for r in records:
 
-        geo = item.get(
-            "geo_point_2d"
-        )
+        geo = r.get("geo_point_2d")
 
-        lat = None
-        lon = None
-
-        if isinstance(geo, dict):
-
-            lat = geo.get("lat")
-            lon = geo.get("lon")
-
-        if lat is None or lon is None:
+        if not geo:
             continue
 
         rows.append(
             {
-                "station_code": item.get(
-                    "metro_station_code"
-                ),
-
-                "station_name": item.get(
-                    "metro_station_name"
-                ),
-
-                "metro_line": item.get(
-                    "metro_line"
-                ),
-
-                "station_type": item.get(
-                    "station_type"
-                ),
-
-                "sequence": item.get(
-                    "sequence"
-                ),
-
-                "latitude": float(lat),
-
-                "longitude": float(lon),
+                "station_name": r.get("station_name"),
+                "metro_line": r.get("metro_line"),
+                "station_type": r.get("station_type"),
+                "latitude": geo.get("lat"),
+                "longitude": geo.get("lon"),
             }
         )
 
-    df = pd.DataFrame(rows)
+    return pd.DataFrame(rows)
 
-    if df.empty:
 
-        raise ValueError(
-            "No valid geographic coordinates were found."
-        )
-
-    return df
+metro = load_metro_data()
 
 
 # ============================================================
-# HEADER
+# GEOSPATIAL FUNCTIONS
 # ============================================================
 
-st.title(
-    "🇸🇦 Riyadh Urban Intelligence AI"
+def haversine_distance(lat1, lon1, lat2, lon2):
+
+    R = 6371
+
+    lat1 = np.radians(lat1)
+    lat2 = np.radians(lat2)
+
+    dlat = np.radians(lat2 - lat1)
+    dlon = np.radians(lon2 - lon1)
+
+    a = (
+        np.sin(dlat / 2) ** 2
+        +
+        np.cos(lat1)
+        * np.cos(lat2)
+        * np.sin(dlon / 2) ** 2
+    )
+
+    return 2 * R * np.arcsin(np.sqrt(a))
+
+
+def calculate_accessibility_score(distance_km):
+
+    score = 100 * np.exp(-distance_km / 2)
+
+    return float(np.clip(score, 0, 100))
+
+
+def classify_score(score):
+
+    if score >= 80:
+        return "Prime Accessibility Zone"
+
+    elif score >= 60:
+        return "Strong Accessibility Zone"
+
+    elif score >= 40:
+        return "Emerging Accessibility Zone"
+
+    return "Lower Accessibility Zone"
+
+
+# ============================================================
+# CALCULATE METRO FEATURES
+# ============================================================
+
+metro["distance_from_riyadh_center_km"] = haversine_distance(
+    RIYADH_LAT,
+    RIYADH_LON,
+    metro["latitude"],
+    metro["longitude"]
 )
 
-st.markdown(
-    """
-### Turning Riyadh Open Data into Location Intelligence
+metro["accessibility_score"] = (
+    100
+    * np.exp(
+        -metro["distance_from_riyadh_center_km"] / 2
+    )
+).clip(0, 100)
 
-**RCRC Open Data → Geospatial Analytics → Machine Learning → Interactive Intelligence**
-"""
+metro["zone"] = metro["accessibility_score"].apply(
+    classify_score
 )
-
-st.divider()
 
 
 # ============================================================
-# LOAD RCRC DATA
+# ML
 # ============================================================
 
 try:
 
-    with st.spinner(
-        "Loading Riyadh Metro data from RCRC..."
-    ):
-
-        metro = load_metro_data()
-
-except Exception as error:
-
-    st.error(
-        "Unable to load RCRC data."
-    )
-
-    st.code(
-        str(error)
-    )
-
-    st.stop()
-
-
-# ============================================================
-# FEATURE ENGINEERING
-# ============================================================
-
-metro[
-    "distance_from_riyadh_center_km"
-] = metro.apply(
-    lambda row: haversine_km(
-        RIYADH_LAT,
-        RIYADH_LON,
-        row["latitude"],
-        row["longitude"]
-    ),
-    axis=1
-)
-
-
-metro[
-    "accessibility_score"
-] = metro[
-    "distance_from_riyadh_center_km"
-].apply(
-    calculate_accessibility_score
-)
-
-
-metro["zone"] = metro[
-    "accessibility_score"
-].apply(
-    classify_zone
-)
-
-
-# ============================================================
-# MACHINE LEARNING
-# ============================================================
-
-try:
-
-    ml_data, clustering_model = segment_zones(
+    ml_data, cluster_model = segment_zones(
         metro,
         n_clusters=4
     )
 
-    explainability_model, feature_importance = (
-        train_explainability_model(
-            metro
-        )
+    explain_model, importance = train_explainability_model(
+        metro
     )
 
-    metro = ml_data
+except Exception:
 
-except Exception as error:
+    ml_data = metro.copy()
 
-    st.warning(
-        "ML layer could not be initialized."
-    )
+    ml_data["ai_zone_segment"] = ml_data["zone"]
 
-    st.code(
-        str(error)
-    )
-
-    st.stop()
+    importance = pd.DataFrame()
 
 
 # ============================================================
 # SIDEBAR
 # ============================================================
 
-st.sidebar.header(
-    "🎛️ Intelligence Controls"
+st.sidebar.header("🔎 Explore Riyadh")
+
+lines = sorted(
+    metro["metro_line"]
+    .dropna()
+    .unique()
+    .tolist()
 )
 
-selected_line = st.sidebar.selectbox(
+selected_lines = st.sidebar.multiselect(
     "Metro Line",
-    ["All"]
-    + sorted(
-        metro["metro_line"]
-        .dropna()
-        .astype(str)
-        .unique()
-        .tolist()
-    )
+    lines,
+    default=lines
 )
 
 min_score = st.sidebar.slider(
-    "Minimum AI Score",
+    "Minimum Accessibility Score",
     0,
     100,
     0
 )
 
 
-# ============================================================
-# FILTERING
-# ============================================================
-
-filtered = metro.copy()
-
-if selected_line != "All":
-
-    filtered = filtered[
-        filtered["metro_line"].astype(str)
-        == selected_line
-    ]
-
-filtered = filtered[
-    filtered["accessibility_score"]
-    >= min_score
+filtered = metro[
+    metro["metro_line"].isin(selected_lines)
+    &
+    (metro["accessibility_score"] >= min_score)
 ]
 
 
 # ============================================================
-# KPI DASHBOARD
+# NAVIGATION
 # ============================================================
 
-col1, col2, col3, col4 = st.columns(4)
-
-col1.metric(
-    "🚇 Metro Stations",
-    len(metro)
-)
-
-col2.metric(
-    "🛤️ Metro Lines",
-    metro["metro_line"].nunique()
-)
-
-col3.metric(
-    "📊 Average AI Score",
-    f"{metro['accessibility_score'].mean():.1f}"
-)
-
-col4.metric(
-    "🏆 Highest Score",
-    f"{metro['accessibility_score'].max():.1f}"
-)
-
-
-st.divider()
-
-
-# ============================================================
-# TOP LOCATIONS
-# ============================================================
-
-st.header(
-    "🏆 Highest Accessibility Locations"
-)
-
-top_locations = (
-    filtered
-    .sort_values(
-        "accessibility_score",
-        ascending=False
-    )
-    .head(10)
+page = st.radio(
+    "Application",
     [
-        [
-            "station_name",
-            "metro_line",
-            "station_type",
-            "distance_from_riyadh_center_km",
-            "accessibility_score",
-            "ai_zone_segment"
+        "🗺️ Explore Riyadh",
+        "📍 Location Decision Engine"
+    ],
+    horizontal=True
+)
+
+
+# ============================================================
+# PAGE 1 — EXPLORE
+# ============================================================
+
+if page == "🗺️ Explore Riyadh":
+
+    st.subheader("Riyadh Metro Accessibility Intelligence")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    col1.metric(
+        "🚇 Stations",
+        len(filtered)
+    )
+
+    col2.metric(
+        "🛤️ Metro Lines",
+        filtered["metro_line"].nunique()
+    )
+
+    col3.metric(
+        "📊 Average Score",
+        f"{filtered['accessibility_score'].mean():.1f}"
+    )
+
+    col4.metric(
+        "🏆 Highest Score",
+        f"{filtered['accessibility_score'].max():.1f}"
+    )
+
+    st.divider()
+
+    st.subheader("📊 Top Accessibility Locations")
+
+    top_locations = (
+        filtered[
+            [
+                "station_name",
+                "metro_line",
+                "distance_from_riyadh_center_km",
+                "accessibility_score",
+                "zone"
+            ]
         ]
-    ]
-    .reset_index(drop=True)
-)
-
-top_locations.index += 1
-
-top_locations.columns = [
-    "Station",
-    "Metro Line",
-    "Station Type",
-    "Distance from Center (km)",
-    "AI Score",
-    "ML Zone"
-]
-
-st.dataframe(
-    top_locations,
-    use_container_width=True
-)
-
-
-# ============================================================
-# MAP
-# ============================================================
-
-st.header(
-    "🗺️ Riyadh Metro Intelligence Map"
-)
-
-fig = px.scatter_map(
-    filtered,
-    lat="latitude",
-    lon="longitude",
-    color="accessibility_score",
-    size="accessibility_score",
-    hover_name="station_name",
-    hover_data={
-        "metro_line": True,
-        "station_type": True,
-        "distance_from_riyadh_center_km": ":.2f",
-        "accessibility_score": ":.2f",
-        "latitude": False,
-        "longitude": False
-    },
-    zoom=9,
-    height=650,
-    map_style="open-street-map",
-    title="AI Accessibility Score by Metro Station"
-)
-
-st.plotly_chart(
-    fig,
-    use_container_width=True
-)
-
-
-# ============================================================
-# ML SEGMENTS
-# ============================================================
-
-st.divider()
-
-st.header(
-    "🤖 Machine Learning Intelligence"
-)
-
-st.markdown(
-    """
-The system uses **K-Means clustering** to segment metro
-locations according to their accessibility signals.
-"""
-)
-
-segment_counts = (
-    metro[
-        "ai_zone_segment"
-    ]
-    .value_counts()
-    .reset_index()
-)
-
-segment_counts.columns = [
-    "AI Zone",
-    "Stations"
-]
-
-col1, col2 = st.columns(2)
-
-with col1:
+        .sort_values(
+            "accessibility_score",
+            ascending=False
+        )
+        .head(10)
+    )
 
     st.dataframe(
-        segment_counts,
+        top_locations,
         use_container_width=True,
         hide_index=True
     )
 
-with col2:
+    st.divider()
 
-    segment_chart = px.bar(
-        segment_counts,
-        x="AI Zone",
-        y="Stations",
-        title="Stations by ML Segment"
+    st.subheader("🗺️ Interactive Riyadh Map")
+
+    fig = px.scatter_map(
+        filtered,
+        lat="latitude",
+        lon="longitude",
+        hover_name="station_name",
+        hover_data=[
+            "metro_line",
+            "accessibility_score",
+            "zone"
+        ],
+        size="accessibility_score",
+        zoom=9,
+        height=600,
+        map_style="open-street-map"
     )
 
     st.plotly_chart(
-        segment_chart,
+        fig,
         use_container_width=True
     )
 
+    st.divider()
 
-# ============================================================
-# FEATURE IMPORTANCE
-# ============================================================
+    st.subheader("🤖 ML Zone Segmentation")
 
-st.header(
-    "🔍 Model Feature Importance"
-)
-
-importance_chart = px.bar(
-    feature_importance,
-    x="importance",
-    y="feature",
-    orientation="h",
-    title="Signals Used by the Explainability Model"
-)
-
-st.plotly_chart(
-    importance_chart,
-    use_container_width=True
-)
-
-
-# ============================================================
-# AI ZONE EXPLORER
-# ============================================================
-
-st.header(
-    "📍 AI Zone Explorer"
-)
-
-selected_zone = st.selectbox(
-    "Select an AI Zone",
-    sorted(
-        metro[
-            "ai_zone_segment"
-        ]
-        .dropna()
-        .unique()
-        .tolist()
+    segment_counts = (
+        ml_data["ai_zone_segment"]
+        .value_counts()
+        .reset_index()
     )
-)
 
-zone_data = metro[
-    metro["ai_zone_segment"]
-    == selected_zone
-]
-
-zone_col1, zone_col2, zone_col3 = st.columns(3)
-
-zone_col1.metric(
-    "Stations",
-    len(zone_data)
-)
-
-zone_col2.metric(
-    "Average AI Score",
-    f"{zone_data['accessibility_score'].mean():.1f}"
-)
-
-zone_col3.metric(
-    "Average Distance",
-    f"{zone_data['distance_from_riyadh_center_km'].mean():.2f} km"
-)
-
-
-st.dataframe(
-    zone_data[
-        [
-            "station_name",
-            "metro_line",
-            "accessibility_score",
-            "ai_zone_segment"
-        ]
+    segment_counts.columns = [
+        "Zone",
+        "Locations"
     ]
-    .sort_values(
-        "accessibility_score",
-        ascending=False
-    ),
-    use_container_width=True,
-    hide_index=True
-)
+
+    fig_segments = px.bar(
+        segment_counts,
+        x="Zone",
+        y="Locations",
+        title="AI Zone Distribution"
+    )
+
+    st.plotly_chart(
+        fig_segments,
+        use_container_width=True
+    )
+
+    if not importance.empty:
+
+        st.subheader("🧠 Explainable AI")
+
+        fig_importance = px.bar(
+            importance,
+            x="importance",
+            y="feature",
+            orientation="h",
+            title="Feature Importance"
+        )
+
+        st.plotly_chart(
+            fig_importance,
+            use_container_width=True
+        )
 
 
 # ============================================================
-# DOWNLOAD
+# PAGE 2 — LOCATION DECISION ENGINE
 # ============================================================
 
-st.header(
-    "📥 Export Intelligence Data"
-)
+else:
 
-csv = metro.to_csv(
-    index=False
-).encode(
-    "utf-8"
-)
+    st.header("📍 Location Decision Engine")
 
-st.download_button(
-    label="Download Riyadh AI Dataset",
-    data=csv,
-    file_name=(
-        "riyadh_urban_intelligence_ai.csv"
-    ),
-    mime="text/csv"
-)
+    st.write(
+        "Evaluate a potential location using Riyadh Metro "
+        "accessibility and machine-learning signals."
+    )
+
+    st.info(
+        "💡 Enter the coordinates of a location you want to evaluate."
+    )
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        latitude = st.number_input(
+            "Latitude",
+            value=RIYADH_LAT,
+            format="%.6f"
+        )
+
+    with col2:
+
+        longitude = st.number_input(
+            "Longitude",
+            value=RIYADH_LON,
+            format="%.6f"
+        )
+
+    business_type = st.selectbox(
+        "🏢 Location Type",
+        [
+            "Retail",
+            "Café / Restaurant",
+            "Healthcare",
+            "Education",
+            "Office",
+            "Logistics",
+            "General"
+        ]
+    )
+
+    analyze = st.button(
+        "🚀 Analyze Location",
+        use_container_width=True
+    )
+
+    if analyze:
+
+        # ----------------------------------------------------
+        # DISTANCE TO EVERY METRO STATION
+        # ----------------------------------------------------
+
+        distances = haversine_distance(
+            latitude,
+            longitude,
+            metro["latitude"],
+            metro["longitude"]
+        )
+
+        nearest_index = distances.idxmin()
+
+        nearest_station = metro.loc[
+            nearest_index
+        ]
+
+        nearest_distance = float(
+            distances.loc[nearest_index]
+        )
+
+        # ----------------------------------------------------
+        # SCORE
+        # ----------------------------------------------------
+
+        accessibility_score = calculate_accessibility_score(
+            nearest_distance
+        )
+
+        zone = classify_score(
+            accessibility_score
+        )
+
+        # ----------------------------------------------------
+        # CENTRALITY
+        # ----------------------------------------------------
+
+        center_distance = haversine_distance(
+            latitude,
+            longitude,
+            RIYADH_LAT,
+            RIYADH_LON
+        )
+
+        centrality_score = calculate_accessibility_score(
+            center_distance
+        )
+
+        # ----------------------------------------------------
+        # OVERALL SCORE
+        # ----------------------------------------------------
+
+        overall_score = (
+            accessibility_score * 0.75
+            +
+            centrality_score * 0.25
+        )
+
+        overall_score = round(
+            float(
+                np.clip(
+                    overall_score,
+                    0,
+                    100
+                )
+            ),
+            1
+        )
+
+        # ----------------------------------------------------
+        # RESULT
+        # ----------------------------------------------------
+
+        st.divider()
+
+        st.subheader(
+            "📊 Location Intelligence Report"
+        )
+
+        score_col1, score_col2, score_col3 = st.columns(3)
+
+        score_col1.metric(
+            "🤖 AI Location Score",
+            f"{overall_score}/100"
+        )
+
+        score_col2.metric(
+            "🚇 Metro Accessibility",
+            f"{accessibility_score:.1f}/100"
+        )
+
+        score_col3.metric(
+            "🏙️ Centrality",
+            f"{centrality_score:.1f}/100"
+        )
+
+        st.divider()
+
+        # ----------------------------------------------------
+        # LOCATION DETAILS
+        # ----------------------------------------------------
+
+        d1, d2, d3, d4 = st.columns(4)
+
+        d1.metric(
+            "📏 Nearest Metro",
+            f"{nearest_distance:.2f} km"
+        )
+
+        d2.metric(
+            "🚇 Station",
+            str(nearest_station["station_name"])
+        )
+
+        d3.metric(
+            "🛤️ Metro Line",
+            str(nearest_station["metro_line"])
+        )
+
+        d4.metric(
+            "🏆 AI Zone",
+            zone
+        )
+
+        st.divider()
+
+        # ----------------------------------------------------
+        # RECOMMENDATION
+        # ----------------------------------------------------
+
+        st.subheader("💡 AI Recommendation")
+
+        if overall_score >= 80:
+
+            recommendation = (
+                f"🟢 **Strong candidate location.** "
+                f"The location has strong accessibility "
+                f"and good proximity to Riyadh's urban center."
+            )
+
+        elif overall_score >= 60:
+
+            recommendation = (
+                f"🟡 **Potential candidate.** "
+                f"The location shows moderate accessibility "
+                f"but additional business and mobility data "
+                f"should be evaluated."
+            )
+
+        else:
+
+            recommendation = (
+                f"🔴 **Lower accessibility signal.** "
+                f"The location is relatively distant from "
+                f"the current metro network or Riyadh center."
+            )
+
+        st.write(recommendation)
+
+        st.divider()
+
+        # ----------------------------------------------------
+        # WHY THIS SCORE?
+        # ----------------------------------------------------
+
+        st.subheader("🧠 Why this score?")
+
+        explanation = pd.DataFrame(
+            {
+                "Signal": [
+                    "Metro Accessibility",
+                    "Urban Centrality"
+                ],
+                "Score": [
+                    round(accessibility_score, 1),
+                    round(centrality_score, 1)
+                ],
+                "Weight": [
+                    "75%",
+                    "25%"
+                ]
+            }
+        )
+
+        st.dataframe(
+            explanation,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.caption(
+            f"Business context selected: {business_type}. "
+            "Business type does not yet change the model weights; "
+            "this will be introduced in a future version."
+        )
+
+        st.divider()
+
+        # ----------------------------------------------------
+        # MAP
+        # ----------------------------------------------------
+
+        st.subheader("📍 Evaluated Location")
+
+        location_df = pd.DataFrame(
+            [
+                {
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "type": "Selected Location"
+                }
+            ]
+        )
+
+        station_df = pd.DataFrame(
+            [
+                {
+                    "latitude": nearest_station["latitude"],
+                    "longitude": nearest_station["longitude"],
+                    "type": "Nearest Metro"
+                }
+            ]
+        )
+
+        map_df = pd.concat(
+            [
+                location_df,
+                station_df
+            ],
+            ignore_index=True
+        )
+
+        fig_location = px.scatter_map(
+            map_df,
+            lat="latitude",
+            lon="longitude",
+            color="type",
+            zoom=12,
+            height=500,
+            map_style="open-street-map"
+        )
+
+        st.plotly_chart(
+            fig_location,
+            use_container_width=True
+        )
+
+        st.divider()
+
+        st.warning(
+            "⚠️ This is an exploratory decision-support prototype. "
+            "The score does not predict business success. "
+            "Future versions will incorporate validated bus, "
+            "traffic, land-use, commercial and mobility signals."
+        )
 
 
 # ============================================================
-# DISCLAIMER
+# FOOTER
 # ============================================================
 
 st.divider()
 
-st.info(
-    """
-**Prototype note**
-
-This system is an exploratory location-intelligence prototype.
-
-The current accessibility score is based primarily on
-geographic proximity to Riyadh Metro infrastructure.
-
-It does **not** claim to predict business success.
-
-Future versions will incorporate validated RCRC layers,
-mobility signals, land use, commercial services, real-world
-outcomes, and an LLM/RAG explanation layer.
-"""
-)
-
-
 st.caption(
-    """
-Data source: Riyadh Royal Commission (RCRC) Open Data Portal
-
-Riyadh Urban Intelligence AI
-Built with Python • Pandas • Scikit-learn • Plotly • Streamlit
-"""
+    "🇸🇦 Riyadh Urban Intelligence AI | "
+    "Data Science • Machine Learning • Geospatial AI • GenAI"
 )
