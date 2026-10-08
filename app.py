@@ -3,6 +3,32 @@ import math
 import pandas as pd
 import streamlit as st
 import plotly.express as px
+from ml_engine import (
+    segment_zones,
+    train_explainability_model
+)
+metro["zone"] = metro[
+    "accessibility_score"
+].apply(
+    classify_zone
+)
+# ------------------------------------------------------------
+# MACHINE LEARNING LAYER
+# ------------------------------------------------------------
+
+ml_data, clustering_model = segment_zones(
+    metro,
+    n_clusters=4
+)
+
+explainability_model, feature_importance = (
+    train_explainability_model(
+        metro
+    )
+)
+
+metro = ml_data
+
 
 # ============================================================
 # RIYADH URBAN INTELLIGENCE AI
