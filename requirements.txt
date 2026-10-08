@@ -1,7 +1,6 @@
+streamlit
 pandas
 numpy
 requests
-scikit-learn
 plotly
-folium
-streamlit
+scikit-learn
