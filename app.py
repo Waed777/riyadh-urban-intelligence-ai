@@ -1,295 +1,392 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import requests
 import plotly.express as px
 
-from ml_engine import segment_zones, train_explainability_model
-
+from data_engine import (
+    load_rcrc_layers,
+    build_candidate_grid,
+    calculate_siteiq_score
+)
 
 # ============================================================
 # CONFIG
 # ============================================================
 
 st.set_page_config(
-    page_title="Riyadh Urban Intelligence AI",
+    page_title="Riyadh SiteIQ",
     page_icon="🇸🇦",
     layout="wide"
 )
 
-st.title("🇸🇦 Riyadh Urban Intelligence AI")
+st.title("🇸🇦 Riyadh SiteIQ")
 st.caption(
-    "AI-powered geospatial intelligence and location decision support for Riyadh"
+    "AI-powered location intelligence and opportunity discovery"
 )
 
-
 # ============================================================
-# DATA
+# LOAD DATA
 # ============================================================
 
-API_URL = (
-    "https://opendata.rcrc.gov.sa/api/explore/v2.1/catalog/datasets/"
-    "metro-stations-in-riyadh-by-metro-line-and-station-type-2024/"
-    "records"
-)
+@st.cache_data(ttl=3600)
+def load_data():
 
-RIYADH_LAT = 24.7136
-RIYADH_LON = 46.6753
+    layers, discovery = load_rcrc_layers()
 
-
-@st.cache_data
-def load_metro_data():
-
-    response = requests.get(
-        API_URL,
-        params={"limit": 100},
-        timeout=30
+    candidates = build_candidate_grid(
+        layers,
+        lat_min=24.55,
+        lat_max=25.00,
+        lon_min=46.45,
+        lon_max=47.05,
+        step=0.02
     )
 
-    response.raise_for_status()
+    candidates = calculate_siteiq_score(
+        candidates
+    )
 
-    records = response.json()["results"]
+    return layers, discovery, candidates
 
-    rows = []
 
-    for r in records:
+with st.spinner("Loading Riyadh intelligence data..."):
 
-        geo = r.get("geo_point_2d")
+    try:
 
-        if not geo:
-            continue
+        layers, discovery, candidates = load_data()
 
-        rows.append(
-            {
-                "station_name": r.get("station_name"),
-                "metro_line": r.get("metro_line"),
-                "station_type": r.get("station_type"),
-                "latitude": geo.get("lat"),
-                "longitude": geo.get("lon"),
-            }
+        data_ready = True
+
+    except Exception as e:
+
+        data_ready = False
+
+        st.error(
+            f"Data engine error: {e}"
         )
 
-    return pd.DataFrame(rows)
-
-
-metro = load_metro_data()
-
 
 # ============================================================
-# GEOSPATIAL FUNCTIONS
+# DATA STATUS
 # ============================================================
 
-def haversine_distance(lat1, lon1, lat2, lon2):
+if data_ready:
 
-    R = 6371
+    with st.expander(
+        "🔌 RCRC Data Sources",
+        expanded=False
+    ):
 
-    lat1 = np.radians(lat1)
-    lat2 = np.radians(lat2)
-
-    dlat = np.radians(lat2 - lat1)
-    dlon = np.radians(lon2 - lon1)
-
-    a = (
-        np.sin(dlat / 2) ** 2
-        +
-        np.cos(lat1)
-        * np.cos(lat2)
-        * np.sin(dlon / 2) ** 2
-    )
-
-    return 2 * R * np.arcsin(np.sqrt(a))
-
-
-def calculate_accessibility_score(distance_km):
-
-    score = 100 * np.exp(-distance_km / 2)
-
-    return float(np.clip(score, 0, 100))
-
-
-def classify_score(score):
-
-    if score >= 80:
-        return "Prime Accessibility Zone"
-
-    elif score >= 60:
-        return "Strong Accessibility Zone"
-
-    elif score >= 40:
-        return "Emerging Accessibility Zone"
-
-    return "Lower Accessibility Zone"
-
-
-# ============================================================
-# CALCULATE METRO FEATURES
-# ============================================================
-
-metro["distance_from_riyadh_center_km"] = haversine_distance(
-    RIYADH_LAT,
-    RIYADH_LON,
-    metro["latitude"],
-    metro["longitude"]
-)
-
-metro["accessibility_score"] = (
-    100
-    * np.exp(
-        -metro["distance_from_riyadh_center_km"] / 2
-    )
-).clip(0, 100)
-
-metro["zone"] = metro["accessibility_score"].apply(
-    classify_score
-)
-
-
-# ============================================================
-# ML
-# ============================================================
-
-try:
-
-    ml_data, cluster_model = segment_zones(
-        metro,
-        n_clusters=4
-    )
-
-    explain_model, importance = train_explainability_model(
-        metro
-    )
-
-except Exception:
-
-    ml_data = metro.copy()
-
-    ml_data["ai_zone_segment"] = ml_data["zone"]
-
-    importance = pd.DataFrame()
-
+        st.dataframe(
+            discovery,
+            use_container_width=True,
+            hide_index=True
+        )
 
 # ============================================================
 # SIDEBAR
 # ============================================================
 
-st.sidebar.header("🔎 Explore Riyadh")
+st.sidebar.header("🎯 SiteIQ Configuration")
 
-lines = sorted(
-    metro["metro_line"]
-    .dropna()
-    .unique()
-    .tolist()
+business_type = st.sidebar.selectbox(
+    "Business Type",
+    [
+        "Café / Restaurant",
+        "Retail",
+        "Healthcare",
+        "Education",
+        "Office",
+        "Logistics",
+        "General"
+    ]
 )
 
-selected_lines = st.sidebar.multiselect(
-    "Metro Line",
-    lines,
-    default=lines
-)
-
-min_score = st.sidebar.slider(
-    "Minimum Accessibility Score",
+accessibility_weight = st.sidebar.slider(
+    "🚇 Accessibility",
     0,
     100,
-    0
+    30
+)
+
+mobility_weight = st.sidebar.slider(
+    "🚦 Mobility",
+    0,
+    100,
+    20
+)
+
+competition_weight = st.sidebar.slider(
+    "🏪 Opportunity Gap",
+    0,
+    100,
+    30
+)
+
+transit_weight = st.sidebar.slider(
+    "🚌 Transit",
+    0,
+    100,
+    20
+)
+
+total_weight = (
+    accessibility_weight
+    + mobility_weight
+    + competition_weight
+    + transit_weight
+)
+
+st.sidebar.metric(
+    "Total Weight",
+    f"{total_weight}%"
+)
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if not data_ready:
+
+    st.stop()
+
+
+# ============================================================
+# HEADER METRICS
+# ============================================================
+
+c1, c2, c3, c4 = st.columns(4)
+
+c1.metric(
+    "📍 Candidate Locations",
+    f"{len(candidates):,}"
+)
+
+c2.metric(
+    "🚇 Metro Records",
+    f"{len(layers.get('metro', [])):,}"
+)
+
+c3.metric(
+    "🚌 Bus Records",
+    f"{len(layers.get('bus', [])):,}"
+)
+
+c4.metric(
+    "🏪 Commercial Records",
+    f"{len(layers.get('commercial', [])):,}"
+)
+
+st.divider()
+
+
+# ============================================================
+# FIND OPPORTUNITIES
+# ============================================================
+
+st.header("🔎 Find Business Opportunities")
+
+st.write(
+    f"Discover high-potential candidate locations for "
+    f"**{business_type}** across Riyadh."
+)
+
+find = st.button(
+    "🚀 FIND OPPORTUNITIES",
+    type="primary",
+    use_container_width=True
 )
 
 
-filtered = metro[
-    metro["metro_line"].isin(selected_lines)
-    &
-    (metro["accessibility_score"] >= min_score)
-]
+if find:
 
+    if total_weight == 0:
 
-# ============================================================
-# NAVIGATION
-# ============================================================
+        st.error(
+            "Please assign at least one weight."
+        )
 
-page = st.radio(
-    "Application",
-    [
-        "🗺️ Explore Riyadh",
-        "📍 Location Decision Engine"
-    ],
-    horizontal=True
-)
+        st.stop()
 
+    # --------------------------------------------------------
+    # CUSTOM SCORE
+    # --------------------------------------------------------
 
-# ============================================================
-# PAGE 1 — EXPLORE
-# ============================================================
+    ranking = candidates.copy()
 
-if page == "🗺️ Explore Riyadh":
+    ranking["custom_siteiq_score"] = (
+        ranking["accessibility_score"]
+        * accessibility_weight
+        +
+        ranking["mobility_score"]
+        * mobility_weight
+        +
+        ranking["competition_gap_score"]
+        * competition_weight
+        +
+        ranking["transit_score"]
+        * transit_weight
+    ) / total_weight
 
-    st.subheader("Riyadh Metro Accessibility Intelligence")
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    col1.metric(
-        "🚇 Stations",
-        len(filtered)
+    ranking["custom_siteiq_score"] = (
+        ranking["custom_siteiq_score"]
+        .clip(0, 100)
+        .round(1)
     )
 
-    col2.metric(
-        "🛤️ Metro Lines",
-        filtered["metro_line"].nunique()
+    ranking = ranking.sort_values(
+        "custom_siteiq_score",
+        ascending=False
+    ).reset_index(
+        drop=True
     )
 
-    col3.metric(
-        "📊 Average Score",
-        f"{filtered['accessibility_score'].mean():.1f}"
+    ranking["rank"] = (
+        ranking.index + 1
     )
 
-    col4.metric(
-        "🏆 Highest Score",
-        f"{filtered['accessibility_score'].max():.1f}"
+    # --------------------------------------------------------
+    # TOP 10
+    # --------------------------------------------------------
+
+    top10 = ranking.head(10)
+
+    st.success(
+        f"Found {len(top10)} leading opportunities "
+        f"for {business_type}."
     )
+
+    st.header("🏆 Top Riyadh Opportunities")
+
+    # --------------------------------------------------------
+    # TOP 3
+    # --------------------------------------------------------
+
+    top1, top2, top3 = st.columns(3)
+
+    cards = [
+        (top1, 0),
+        (top2, 1),
+        (top3, 2)
+    ]
+
+    for column, index in cards:
+
+        if index >= len(top10):
+            continue
+
+        row = top10.iloc[index]
+
+        with column:
+
+            st.subheader(
+                f"#{index + 1} Opportunity"
+            )
+
+            st.metric(
+                "SiteIQ Score",
+                f"{row['custom_siteiq_score']}/100"
+            )
+
+            st.write(
+                f"📍 **{row['latitude']:.4f}, "
+                f"{row['longitude']:.4f}**"
+            )
+
+            st.write(
+                f"🚇 Metro: "
+                f"{row['metro_distance_km']:.2f} km"
+            )
+
+            st.write(
+                f"🚌 Bus: "
+                f"{row['bus_distance_km']:.2f} km"
+            )
+
+            st.write(
+                f"🚦 Intersections: "
+                f"{int(row['traffic_intersections_2km'])}"
+            )
+
+            st.write(
+                f"🏪 Services: "
+                f"{int(row['commercial_services_2km'])}"
+            )
 
     st.divider()
 
-    st.subheader("📊 Top Accessibility Locations")
+    # ========================================================
+    # RANKING TABLE
+    # ========================================================
 
-    top_locations = (
-        filtered[
-            [
-                "station_name",
-                "metro_line",
-                "distance_from_riyadh_center_km",
-                "accessibility_score",
-                "zone"
-            ]
-        ]
-        .sort_values(
+    st.subheader("📊 Top 10 Ranking")
+
+    display = top10[
+        [
+            "rank",
+            "latitude",
+            "longitude",
+            "custom_siteiq_score",
             "accessibility_score",
-            ascending=False
-        )
-        .head(10)
-    )
+            "transit_score",
+            "mobility_score",
+            "competition_gap_score",
+            "metro_distance_km",
+            "bus_distance_km",
+            "traffic_intersections_2km",
+            "commercial_services_2km"
+        ]
+    ].copy()
+
+    display.columns = [
+        "Rank",
+        "Latitude",
+        "Longitude",
+        "SiteIQ",
+        "Accessibility",
+        "Transit",
+        "Mobility",
+        "Opportunity Gap",
+        "Metro km",
+        "Bus km",
+        "Traffic",
+        "Commercial"
+    ]
 
     st.dataframe(
-        top_locations,
+        display,
         use_container_width=True,
         hide_index=True
     )
 
-    st.divider()
+    # ========================================================
+    # OPPORTUNITY MAP
+    # ========================================================
 
-    st.subheader("🗺️ Interactive Riyadh Map")
+    st.subheader(
+        "🗺️ Riyadh Opportunity Map"
+    )
+
+    map_data = ranking.head(1000).copy()
 
     fig = px.scatter_map(
-        filtered,
+        map_data,
         lat="latitude",
         lon="longitude",
-        hover_name="station_name",
-        hover_data=[
-            "metro_line",
-            "accessibility_score",
-            "zone"
-        ],
-        size="accessibility_score",
+        color="custom_siteiq_score",
+        size="custom_siteiq_score",
+        hover_name="custom_siteiq_score",
+        hover_data={
+            "latitude": ":.5f",
+            "longitude": ":.5f",
+            "custom_siteiq_score": ":.1f",
+            "metro_distance_km": ":.2f",
+            "bus_distance_km": ":.2f",
+            "traffic_intersections_2km": True,
+            "commercial_services_2km": True
+        },
         zoom=9,
-        height=600,
+        height=650,
         map_style="open-street-map"
     )
 
@@ -298,362 +395,161 @@ if page == "🗺️ Explore Riyadh":
         use_container_width=True
     )
 
+    # ========================================================
+    # SELECT LOCATION
+    # ========================================================
+
     st.divider()
 
-    st.subheader("🤖 ML Zone Segmentation")
-
-    segment_counts = (
-        ml_data["ai_zone_segment"]
-        .value_counts()
-        .reset_index()
+    st.subheader(
+        "🔬 Analyze an Opportunity"
     )
 
-    segment_counts.columns = [
-        "Zone",
-        "Locations"
-    ]
+    selected_rank = st.selectbox(
+        "Select ranked location",
+        top10["rank"].tolist()
+    )
 
-    fig_segments = px.bar(
-        segment_counts,
-        x="Zone",
-        y="Locations",
-        title="AI Zone Distribution"
+    selected = ranking[
+        ranking["rank"] == selected_rank
+    ].iloc[0]
+
+    s1, s2, s3 = st.columns(3)
+
+    s1.metric(
+        "SiteIQ Score",
+        f"{selected['custom_siteiq_score']:.1f}"
+    )
+
+    s2.metric(
+        "Metro Distance",
+        f"{selected['metro_distance_km']:.2f} km"
+    )
+
+    s3.metric(
+        "Opportunity Gap",
+        f"{selected['competition_gap_score']:.1f}"
+    )
+
+    # ========================================================
+    # WHY?
+    # ========================================================
+
+    st.subheader(
+        "🧠 Why was this location ranked here?"
+    )
+
+    factors = pd.DataFrame(
+        {
+            "Signal": [
+                "Accessibility",
+                "Transit",
+                "Mobility",
+                "Opportunity Gap"
+            ],
+            "Score": [
+                selected["accessibility_score"],
+                selected["transit_score"],
+                selected["mobility_score"],
+                selected["competition_gap_score"]
+            ],
+            "Weight": [
+                accessibility_weight,
+                transit_weight,
+                mobility_weight,
+                competition_weight
+            ]
+        }
+    )
+
+    factors["Contribution"] = (
+        factors["Score"]
+        * factors["Weight"]
+        / total_weight
+    ).round(1)
+
+    st.dataframe(
+        factors,
+        use_container_width=True,
+        hide_index=True
+    )
+
+    fig_factors = px.bar(
+        factors,
+        x="Signal",
+        y="Score",
+        text="Score",
+        title="Location Intelligence Signals"
     )
 
     st.plotly_chart(
-        fig_segments,
+        fig_factors,
         use_container_width=True
     )
 
-    if not importance.empty:
+    # ========================================================
+    # AI-STYLE INSIGHT
+    # ========================================================
 
-        st.subheader("🧠 Explainable AI")
+    st.subheader(
+        "🤖 SiteIQ Insight"
+    )
 
-        fig_importance = px.bar(
-            importance,
-            x="importance",
-            y="feature",
-            orientation="h",
-            title="Feature Importance"
-        )
+    strongest = factors.sort_values(
+        "Score",
+        ascending=False
+    ).iloc[0]
 
-        st.plotly_chart(
-            fig_importance,
-            use_container_width=True
-        )
+    weakest = factors.sort_values(
+        "Score",
+        ascending=True
+    ).iloc[0]
 
+    st.info(
+        f"""
+**Recommended candidate for {business_type}.**
 
-# ============================================================
-# PAGE 2 — LOCATION DECISION ENGINE
-# ============================================================
+The location achieved a **{selected['custom_siteiq_score']:.1f}/100**
+SiteIQ score.
+
+**Strongest signal:** {strongest['Signal']}
+({strongest['Score']:.1f}/100)
+
+**Weakest signal:** {weakest['Signal']}
+({weakest['Score']:.1f}/100)
+
+The location is approximately
+**{selected['metro_distance_km']:.2f} km from the nearest Metro station**
+and has **{int(selected['traffic_intersections_2km'])} traffic intersections**
+within the analysis radius.
+
+This is a data-driven location screening signal,
+not a prediction of business success.
+"""
+    )
+
+    # ========================================================
+    # DOWNLOAD
+    # ========================================================
+
+    csv = top10.to_csv(
+        index=False
+    )
+
+    st.download_button(
+        "⬇️ Export Top Opportunities",
+        csv,
+        "riyadh_siteiq_opportunities.csv",
+        "text/csv",
+        use_container_width=True
+    )
 
 else:
 
-    st.header("📍 Location Decision Engine")
-
-    st.write(
-        "Evaluate a potential location using Riyadh Metro "
-        "accessibility and machine-learning signals."
-    )
-
     st.info(
-        "💡 Enter the coordinates of a location you want to evaluate."
+        "Configure the business priorities on the left, "
+        "then click **FIND OPPORTUNITIES**."
     )
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        latitude = st.number_input(
-            "Latitude",
-            value=RIYADH_LAT,
-            format="%.6f"
-        )
-
-    with col2:
-
-        longitude = st.number_input(
-            "Longitude",
-            value=RIYADH_LON,
-            format="%.6f"
-        )
-
-    business_type = st.selectbox(
-        "🏢 Location Type",
-        [
-            "Retail",
-            "Café / Restaurant",
-            "Healthcare",
-            "Education",
-            "Office",
-            "Logistics",
-            "General"
-        ]
-    )
-
-    analyze = st.button(
-        "🚀 Analyze Location",
-        use_container_width=True
-    )
-
-    if analyze:
-
-        # ----------------------------------------------------
-        # DISTANCE TO EVERY METRO STATION
-        # ----------------------------------------------------
-
-        distances = haversine_distance(
-            latitude,
-            longitude,
-            metro["latitude"],
-            metro["longitude"]
-        )
-
-        nearest_index = distances.idxmin()
-
-        nearest_station = metro.loc[
-            nearest_index
-        ]
-
-        nearest_distance = float(
-            distances.loc[nearest_index]
-        )
-
-        # ----------------------------------------------------
-        # SCORE
-        # ----------------------------------------------------
-
-        accessibility_score = calculate_accessibility_score(
-            nearest_distance
-        )
-
-        zone = classify_score(
-            accessibility_score
-        )
-
-        # ----------------------------------------------------
-        # CENTRALITY
-        # ----------------------------------------------------
-
-        center_distance = haversine_distance(
-            latitude,
-            longitude,
-            RIYADH_LAT,
-            RIYADH_LON
-        )
-
-        centrality_score = calculate_accessibility_score(
-            center_distance
-        )
-
-        # ----------------------------------------------------
-        # OVERALL SCORE
-        # ----------------------------------------------------
-
-        overall_score = (
-            accessibility_score * 0.75
-            +
-            centrality_score * 0.25
-        )
-
-        overall_score = round(
-            float(
-                np.clip(
-                    overall_score,
-                    0,
-                    100
-                )
-            ),
-            1
-        )
-
-        # ----------------------------------------------------
-        # RESULT
-        # ----------------------------------------------------
-
-        st.divider()
-
-        st.subheader(
-            "📊 Location Intelligence Report"
-        )
-
-        score_col1, score_col2, score_col3 = st.columns(3)
-
-        score_col1.metric(
-            "🤖 AI Location Score",
-            f"{overall_score}/100"
-        )
-
-        score_col2.metric(
-            "🚇 Metro Accessibility",
-            f"{accessibility_score:.1f}/100"
-        )
-
-        score_col3.metric(
-            "🏙️ Centrality",
-            f"{centrality_score:.1f}/100"
-        )
-
-        st.divider()
-
-        # ----------------------------------------------------
-        # LOCATION DETAILS
-        # ----------------------------------------------------
-
-        d1, d2, d3, d4 = st.columns(4)
-
-        d1.metric(
-            "📏 Nearest Metro",
-            f"{nearest_distance:.2f} km"
-        )
-
-        d2.metric(
-            "🚇 Station",
-            str(nearest_station["station_name"])
-        )
-
-        d3.metric(
-            "🛤️ Metro Line",
-            str(nearest_station["metro_line"])
-        )
-
-        d4.metric(
-            "🏆 AI Zone",
-            zone
-        )
-
-        st.divider()
-
-        # ----------------------------------------------------
-        # RECOMMENDATION
-        # ----------------------------------------------------
-
-        st.subheader("💡 AI Recommendation")
-
-        if overall_score >= 80:
-
-            recommendation = (
-                f"🟢 **Strong candidate location.** "
-                f"The location has strong accessibility "
-                f"and good proximity to Riyadh's urban center."
-            )
-
-        elif overall_score >= 60:
-
-            recommendation = (
-                f"🟡 **Potential candidate.** "
-                f"The location shows moderate accessibility "
-                f"but additional business and mobility data "
-                f"should be evaluated."
-            )
-
-        else:
-
-            recommendation = (
-                f"🔴 **Lower accessibility signal.** "
-                f"The location is relatively distant from "
-                f"the current metro network or Riyadh center."
-            )
-
-        st.write(recommendation)
-
-        st.divider()
-
-        # ----------------------------------------------------
-        # WHY THIS SCORE?
-        # ----------------------------------------------------
-
-        st.subheader("🧠 Why this score?")
-
-        explanation = pd.DataFrame(
-            {
-                "Signal": [
-                    "Metro Accessibility",
-                    "Urban Centrality"
-                ],
-                "Score": [
-                    round(accessibility_score, 1),
-                    round(centrality_score, 1)
-                ],
-                "Weight": [
-                    "75%",
-                    "25%"
-                ]
-            }
-        )
-
-        st.dataframe(
-            explanation,
-            use_container_width=True,
-            hide_index=True
-        )
-
-        st.caption(
-            f"Business context selected: {business_type}. "
-            "Business type does not yet change the model weights; "
-            "this will be introduced in a future version."
-        )
-
-        st.divider()
-
-        # ----------------------------------------------------
-        # MAP
-        # ----------------------------------------------------
-
-        st.subheader("📍 Evaluated Location")
-
-        location_df = pd.DataFrame(
-            [
-                {
-                    "latitude": latitude,
-                    "longitude": longitude,
-                    "type": "Selected Location"
-                }
-            ]
-        )
-
-        station_df = pd.DataFrame(
-            [
-                {
-                    "latitude": nearest_station["latitude"],
-                    "longitude": nearest_station["longitude"],
-                    "type": "Nearest Metro"
-                }
-            ]
-        )
-
-        map_df = pd.concat(
-            [
-                location_df,
-                station_df
-            ],
-            ignore_index=True
-        )
-
-        fig_location = px.scatter_map(
-            map_df,
-            lat="latitude",
-            lon="longitude",
-            color="type",
-            zoom=12,
-            height=500,
-            map_style="open-street-map"
-        )
-
-        st.plotly_chart(
-            fig_location,
-            use_container_width=True
-        )
-
-        st.divider()
-
-        st.warning(
-            "⚠️ This is an exploratory decision-support prototype. "
-            "The score does not predict business success. "
-            "Future versions will incorporate validated bus, "
-            "traffic, land-use, commercial and mobility signals."
-        )
-
 
 # ============================================================
 # FOOTER
@@ -662,6 +558,6 @@ else:
 st.divider()
 
 st.caption(
-    "🇸🇦 Riyadh Urban Intelligence AI | "
-    "Data Science • Machine Learning • Geospatial AI • GenAI"
+    "Riyadh SiteIQ • Geospatial AI • Machine Learning • "
+    "Decision Intelligence"
 )
