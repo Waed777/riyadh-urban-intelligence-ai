@@ -3,398 +3,130 @@ import pandas as pd
 import numpy as np
 
 
-# ============================================================
-# RCRC DATA ENGINE
-# Riyadh SiteIQ
-# ============================================================
-
 BASE_URL = "https://opendata.rcrc.gov.sa/api/explore/v2.1"
-
 CATALOG_URL = f"{BASE_URL}/catalog/datasets"
 
 
-# ============================================================
-# DATASET DISCOVERY
-# ============================================================
-
-DATASET_TARGETS = {
-    "metro": [
-        "metro stations",
-        "metro station",
-        "riyadh metro"
-    ],
-    "bus": [
-        "bus stops",
-        "bus stations",
-        "bus line stations",
-        "riyadh bus"
-    ],
-    "traffic": [
-        "traffic intersections",
-        "intersections",
-        "traffic"
-    ],
-    "commercial": [
-        "commercial services",
-        "commercial service"
-    ]
+DATASET_IDS = {
+    "metro": "metro-stations-in-riyadh-by-metro-line-and-station-type-2024",
+    "bus": "bus-stops-in-riyadh-by-bus-route-direction-and-shelter-type-2024",
+    "traffic": "traffic-intersections-by-main-street-and-cross-street-2024",
+    "commercial": "commercial-services-by-category-sub-municipality-and-district-2024",
 }
 
 
-def get_catalog(limit=100):
+def load_dataset(dataset_id, limit=10000):
 
-    response = requests.get(
-        CATALOG_URL,
-        params={
-            "limit": limit
-        },
-        timeout=30
-    )
-
-    response.raise_for_status()
-
-    return response.json()
-
-
-def discover_dataset(target_name):
-
-    catalog = get_catalog()
-
-    datasets = catalog.get("datasets", [])
-
-    keywords = DATASET_TARGETS[target_name]
-
-    candidates = []
-
-    for item in datasets:
-
-        dataset = item.get("dataset", {})
-
-        dataset_id = dataset.get("dataset_id", "")
-        title = dataset.get("metas", {}).get("default", {}).get(
-            "title",
-            ""
-        )
-
-        description = dataset.get("metas", {}).get(
-            "default",
-            {}
-        ).get(
-            "description",
-            ""
-        )
-
-        text = (
-            f"{dataset_id} "
-            f"{title} "
-            f"{description}"
-        ).lower()
-
-        score = 0
-
-        for keyword in keywords:
-
-            if keyword.lower() in text:
-
-                score += 1
-
-        if score > 0:
-
-            candidates.append(
-                {
-                    "dataset_id": dataset_id,
-                    "title": title,
-                    "description": description,
-                    "score": score
-                }
-            )
-
-    if not candidates:
-
-        return None
-
-    candidates = sorted(
-        candidates,
-        key=lambda x: x["score"],
-        reverse=True
-    )
-
-    return candidates[0]
-
-
-# ============================================================
-# LOAD DATASET
-# ============================================================
-
-def load_dataset(
-    dataset_id,
-    limit=10000
-):
-
-    url = (
-        f"{CATALOG_URL}/"
-        f"{dataset_id}/records"
-    )
+    url = f"{CATALOG_URL}/{dataset_id}/records"
 
     response = requests.get(
         url,
-        params={
-            "limit": limit
-        },
+        params={"limit": limit},
         timeout=60
     )
 
     response.raise_for_status()
 
-    results = response.json().get(
-        "results",
-        []
+    return pd.json_normalize(
+        response.json().get("results", [])
     )
 
-    return pd.json_normalize(results)
-
-
-# ============================================================
-# GEO EXTRACTION
-# ============================================================
 
 def extract_coordinates(df):
 
     data = df.copy()
 
-    latitude = []
-    longitude = []
+    data["latitude"] = np.nan
+    data["longitude"] = np.nan
 
-    for _, row in data.iterrows():
+    for column in data.columns:
 
-        lat = None
-        lon = None
+        name = column.lower()
 
-        # ----------------------------------------------------
-        # geo_point_2d
-        # ----------------------------------------------------
+        if "geo_point_2d" in name:
 
-        for column in data.columns:
-
-            column_lower = column.lower()
-
-            if "geo_point_2d" in column_lower:
-
-                value = row[column]
+            for index, value in data[column].items():
 
                 if isinstance(value, dict):
 
-                    lat = value.get("lat")
-                    lon = value.get("lon")
+                    data.loc[index, "latitude"] = value.get("lat")
+                    data.loc[index, "longitude"] = value.get("lon")
 
-                elif isinstance(value, str):
+    for column in data.columns:
 
-                    try:
+        name = column.lower()
 
-                        import json
+        if "latitude" in name or name == "lat":
 
-                        parsed = json.loads(value)
+            values = pd.to_numeric(
+                data[column],
+                errors="coerce"
+            )
 
-                        lat = parsed.get("lat")
-                        lon = parsed.get("lon")
+            data["latitude"] = data["latitude"].fillna(values)
 
-                    except Exception:
+        if "longitude" in name or name == "lon":
 
-                        pass
+            values = pd.to_numeric(
+                data[column],
+                errors="coerce"
+            )
 
-        # ----------------------------------------------------
-        # Search latitude / longitude columns
-        # ----------------------------------------------------
-
-        if lat is None or lon is None:
-
-            for column in data.columns:
-
-                name = column.lower()
-
-                if (
-                    "latitude" in name
-                    or name.endswith("_lat")
-                    or name == "lat"
-                ):
-
-                    try:
-                        lat = float(row[column])
-                    except Exception:
-                        pass
-
-                if (
-                    "longitude" in name
-                    or name.endswith("_lon")
-                    or name == "lon"
-                ):
-
-                    try:
-                        lon = float(row[column])
-                    except Exception:
-                        pass
-
-        # ----------------------------------------------------
-        # GeoJSON
-        # ----------------------------------------------------
-
-        if lat is None or lon is None:
-
-            for column in data.columns:
-
-                if "geo_shape" not in column.lower():
-
-                    continue
-
-                value = row[column]
-
-                if isinstance(value, dict):
-
-                    geometry = value.get(
-                        "geometry",
-                        value
-                    )
-
-                    coordinates = geometry.get(
-                        "coordinates"
-                    )
-
-                    if (
-                        isinstance(coordinates, list)
-                        and len(coordinates) >= 2
-                    ):
-
-                        try:
-
-                            lon = float(
-                                coordinates[0]
-                            )
-
-                            lat = float(
-                                coordinates[1]
-                            )
-
-                        except Exception:
-
-                            pass
-
-        latitude.append(lat)
-        longitude.append(lon)
-
-    data["latitude"] = latitude
-    data["longitude"] = longitude
-
-    data["latitude"] = pd.to_numeric(
-        data["latitude"],
-        errors="coerce"
-    )
-
-    data["longitude"] = pd.to_numeric(
-        data["longitude"],
-        errors="coerce"
-    )
+            data["longitude"] = data["longitude"].fillna(values)
 
     data = data.dropna(
-        subset=[
-            "latitude",
-            "longitude"
-        ]
+        subset=["latitude", "longitude"]
     )
-
-    # Riyadh geographic sanity check
 
     data = data[
         (data["latitude"] >= 24.0)
-        &
-        (data["latitude"] <= 25.5)
-        &
-        (data["longitude"] >= 46.0)
-        &
-        (data["longitude"] <= 47.5)
+        & (data["latitude"] <= 25.5)
+        & (data["longitude"] >= 46.0)
+        & (data["longitude"] <= 47.5)
     ]
 
-    return data.reset_index(
-        drop=True
-    )
+    return data.reset_index(drop=True)
 
-
-# ============================================================
-# LOAD RCRC LAYERS
-# ============================================================
 
 def load_rcrc_layers():
 
     layers = {}
+    status = []
 
-    discovery_log = []
-
-    for target in [
-        "metro",
-        "bus",
-        "traffic",
-        "commercial"
-    ]:
+    for name, dataset_id in DATASET_IDS.items():
 
         try:
 
-            dataset = discover_dataset(
-                target
-            )
+            raw = load_dataset(dataset_id)
 
-            if dataset is None:
+            clean = extract_coordinates(raw)
 
-                discovery_log.append(
-                    {
-                        "layer": target,
-                        "status": "NOT FOUND",
-                        "dataset_id": None
-                    }
-                )
+            layers[name] = clean
 
-                continue
-
-            dataset_id = dataset[
-                "dataset_id"
-            ]
-
-            raw = load_dataset(
-                dataset_id
-            )
-
-            clean = extract_coordinates(
-                raw
-            )
-
-            layers[target] = clean
-
-            discovery_log.append(
+            status.append(
                 {
-                    "layer": target,
+                    "layer": name,
                     "status": "LOADED",
-                    "dataset_id": dataset_id,
                     "records": len(clean),
-                    "title": dataset["title"]
+                    "dataset_id": dataset_id
                 }
             )
 
-        except Exception as e:
+        except Exception as error:
 
-            discovery_log.append(
+            layers[name] = pd.DataFrame()
+
+            status.append(
                 {
-                    "layer": target,
-                    "status": f"ERROR: {str(e)}",
-                    "dataset_id": None
+                    "layer": name,
+                    "status": f"ERROR: {error}",
+                    "records": 0,
+                    "dataset_id": dataset_id
                 }
             )
 
-    return layers, pd.DataFrame(
-        discovery_log
-    )
+    return layers, pd.DataFrame(status)
 
-
-# ============================================================
-# HAVERSINE DISTANCE
-# ============================================================
 
 def haversine_distance(
     lat1,
@@ -403,39 +135,27 @@ def haversine_distance(
     lon2
 ):
 
-    R = 6371.0
+    earth_radius = 6371.0
 
     lat1 = np.radians(lat1)
     lat2 = np.radians(lat2)
 
-    dlat = np.radians(
-        lat2 - lat1
-    )
-
-    dlon = np.radians(
-        lon2 - lon1
-    )
+    dlat = np.radians(lat2 - lat1)
+    dlon = np.radians(lon2 - lon1)
 
     a = (
         np.sin(dlat / 2) ** 2
-        +
-        np.cos(lat1)
+        + np.cos(lat1)
         * np.cos(lat2)
         * np.sin(dlon / 2) ** 2
     )
 
     return (
         2
-        * R
-        * np.arcsin(
-            np.sqrt(a)
-        )
+        * earth_radius
+        * np.arcsin(np.sqrt(a))
     )
 
-
-# ============================================================
-# NEAREST FEATURE
-# ============================================================
 
 def nearest_distance(
     latitude,
@@ -443,8 +163,7 @@ def nearest_distance(
     layer
 ):
 
-    if layer is None or layer.empty:
-
+    if layer.empty:
         return np.nan
 
     distances = haversine_distance(
@@ -454,14 +173,8 @@ def nearest_distance(
         layer["longitude"].values
     )
 
-    return float(
-        np.min(distances)
-    )
+    return float(np.min(distances))
 
-
-# ============================================================
-# CANDIDATE FEATURES
-# ============================================================
 
 def calculate_location_features(
     latitude,
@@ -475,59 +188,39 @@ def calculate_location_features(
         "longitude": longitude
     }
 
-    # --------------------------------------------------------
-    # Metro
-    # --------------------------------------------------------
-
     metro = layers.get(
-        "metro"
+        "metro",
+        pd.DataFrame()
     )
-
-    if metro is not None and not metro.empty:
-
-        result["metro_distance_km"] = (
-            nearest_distance(
-                latitude,
-                longitude,
-                metro
-            )
-        )
-
-    else:
-
-        result["metro_distance_km"] = np.nan
-
-    # --------------------------------------------------------
-    # Bus
-    # --------------------------------------------------------
 
     bus = layers.get(
-        "bus"
+        "bus",
+        pd.DataFrame()
     )
-
-    if bus is not None and not bus.empty:
-
-        result["bus_distance_km"] = (
-            nearest_distance(
-                latitude,
-                longitude,
-                bus
-            )
-        )
-
-    else:
-
-        result["bus_distance_km"] = np.nan
-
-    # --------------------------------------------------------
-    # Traffic
-    # --------------------------------------------------------
 
     traffic = layers.get(
-        "traffic"
+        "traffic",
+        pd.DataFrame()
     )
 
-    if traffic is not None and not traffic.empty:
+    commercial = layers.get(
+        "commercial",
+        pd.DataFrame()
+    )
+
+    result["metro_distance_km"] = nearest_distance(
+        latitude,
+        longitude,
+        metro
+    )
+
+    result["bus_distance_km"] = nearest_distance(
+        latitude,
+        longitude,
+        bus
+    )
+
+    if not traffic.empty:
 
         distances = haversine_distance(
             latitude,
@@ -537,27 +230,14 @@ def calculate_location_features(
         )
 
         result["traffic_intersections_2km"] = int(
-            np.sum(
-                distances <= radius_km
-            )
+            np.sum(distances <= radius_km)
         )
 
     else:
 
         result["traffic_intersections_2km"] = 0
 
-    # --------------------------------------------------------
-    # Commercial Services
-    # --------------------------------------------------------
-
-    commercial = layers.get(
-        "commercial"
-    )
-
-    if (
-        commercial is not None
-        and not commercial.empty
-    ):
+    if not commercial.empty:
 
         distances = haversine_distance(
             latitude,
@@ -566,26 +246,16 @@ def calculate_location_features(
             commercial["longitude"].values
         )
 
-        nearby = commercial[
-            distances <= radius_km
-        ]
-
-        result[
-            "commercial_services_2km"
-        ] = len(nearby)
+        result["commercial_services_2km"] = int(
+            np.sum(distances <= radius_km)
+        )
 
     else:
 
-        result[
-            "commercial_services_2km"
-        ] = 0
+        result["commercial_services_2km"] = 0
 
     return result
 
-
-# ============================================================
-# BUILD CANDIDATE GRID
-# ============================================================
 
 def build_candidate_grid(
     layers,
@@ -593,8 +263,10 @@ def build_candidate_grid(
     lat_max=25.00,
     lon_min=46.45,
     lon_max=47.05,
-    step=0.01
+    step=0.02
 ):
+
+    candidates = []
 
     latitudes = np.arange(
         lat_min,
@@ -608,34 +280,22 @@ def build_candidate_grid(
         step
     )
 
-    candidates = []
+    for latitude in latitudes:
 
-    for lat in latitudes:
-
-        for lon in longitudes:
-
-            features = calculate_location_features(
-                lat,
-                lon,
-                layers
-            )
+        for longitude in longitudes:
 
             candidates.append(
-                features
+                calculate_location_features(
+                    latitude,
+                    longitude,
+                    layers
+                )
             )
 
-    return pd.DataFrame(
-        candidates
-    )
+    return pd.DataFrame(candidates)
 
 
-# ============================================================
-# NORMALIZE FEATURE
-# ============================================================
-
-def normalize_inverse(
-    series
-):
+def normalize_inverse(series):
 
     series = pd.to_numeric(
         series,
@@ -645,11 +305,7 @@ def normalize_inverse(
     minimum = series.min()
     maximum = series.max()
 
-    if (
-        pd.isna(minimum)
-        or pd.isna(maximum)
-        or maximum == minimum
-    ):
+    if pd.isna(minimum) or maximum == minimum:
 
         return pd.Series(
             50,
@@ -658,18 +314,12 @@ def normalize_inverse(
 
     return (
         100
-        * (
-            maximum - series
-        )
-        / (
-            maximum - minimum
-        )
+        * (maximum - series)
+        / (maximum - minimum)
     )
 
 
-def normalize_positive(
-    series
-):
+def normalize_positive(series):
 
     series = pd.to_numeric(
         series,
@@ -679,11 +329,7 @@ def normalize_positive(
     minimum = series.min()
     maximum = series.max()
 
-    if (
-        pd.isna(minimum)
-        or pd.isna(maximum)
-        or maximum == minimum
-    ):
+    if pd.isna(minimum) or maximum == minimum:
 
         return pd.Series(
             50,
@@ -692,91 +338,41 @@ def normalize_positive(
 
     return (
         100
-        * (
-            series - minimum
-        )
-        / (
-            maximum - minimum
-        )
+        * (series - minimum)
+        / (maximum - minimum)
     )
 
 
-# ============================================================
-# SITEIQ OPPORTUNITY SCORE
-# ============================================================
-
-def calculate_siteiq_score(
-    candidates
-):
+def calculate_siteiq_score(candidates):
 
     data = candidates.copy()
 
-    # Accessibility
-
-    data["accessibility_score"] = (
-        normalize_inverse(
-            data["metro_distance_km"]
-        )
+    data["accessibility_score"] = normalize_inverse(
+        data["metro_distance_km"]
     )
 
-    # Public transport
+    bus_score = normalize_inverse(
+        data["bus_distance_km"]
+    )
 
     data["transit_score"] = (
-        (
-            data["accessibility_score"]
-            +
-            normalize_inverse(
-                data["bus_distance_km"]
-            )
-        )
-        / 2
+        data["accessibility_score"]
+        + bus_score
+    ) / 2
+
+    data["mobility_score"] = normalize_positive(
+        data["traffic_intersections_2km"]
     )
 
-    # Road / traffic connectivity
-
-    data["mobility_score"] = (
-        normalize_positive(
-            data[
-                "traffic_intersections_2km"
-            ]
-        )
+    data["competition_gap_score"] = normalize_inverse(
+        data["commercial_services_2km"]
     )
-
-    # Commercial activity
-
-    data["commercial_activity_score"] = (
-        normalize_positive(
-            data[
-                "commercial_services_2km"
-            ]
-        )
-    )
-
-    # Competition gap
-    #
-    # Fewer commercial services = larger gap.
-    # This is NOT a business-success prediction.
-
-    data["competition_gap_score"] = (
-        normalize_inverse(
-            data[
-                "commercial_services_2km"
-            ]
-        )
-    )
-
-    # --------------------------------------------------------
-    # FINAL SITEIQ SCORE
-    # --------------------------------------------------------
 
     data["siteiq_score"] = (
         data["accessibility_score"] * 0.30
-        +
-        data["transit_score"] * 0.20
-        +
-        data["mobility_score"] * 0.20
-        +
-        data["competition_gap_score"] * 0.30
+        + data["transit_score"] * 0.20
+        + data["mobility_score"] * 0.20
+        + data["competition_gap_score"] * 0.30
     )
 
     data["siteiq_score"] = (
@@ -786,81 +382,3 @@ def calculate_siteiq_score(
     )
 
     return data
-
-
-# ============================================================
-# TOP OPPORTUNITIES
-# ============================================================
-
-def rank_opportunities(
-    candidates,
-    top_n=10
-):
-
-    data = calculate_siteiq_score(
-        candidates
-    )
-
-    return (
-        data
-        .sort_values(
-            "siteiq_score",
-            ascending=False
-        )
-        .head(top_n)
-        .reset_index(
-            drop=True
-        )
-    )
-
-
-# ============================================================
-# ONE-CALL PIPELINE
-# ============================================================
-
-def run_siteiq_pipeline():
-
-    layers, discovery = (
-        load_rcrc_layers()
-    )
-
-    candidates = build_candidate_grid(
-        layers
-    )
-
-    ranked = rank_opportunities(
-        candidates,
-        top_n=10
-    )
-
-    return {
-        "layers": layers,
-        "discovery": discovery,
-        "candidates": candidates,
-        "top_opportunities": ranked
-    }
-  if __name__ == "__main__":
-
-    result = run_siteiq_pipeline()
-
-    print("\n==============================")
-    print("RCRC DATA DISCOVERY")
-    print("==============================")
-
-    print(
-        result["discovery"].to_string(
-            index=False
-        )
-    )
-
-    print("\n==============================")
-    print("TOP SITEIQ OPPORTUNITIES")
-    print("==============================")
-
-    print(
-        result[
-            "top_opportunities"
-        ].to_string(
-            index=False
-        )
-    )
