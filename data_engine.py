@@ -3,130 +3,233 @@ import pandas as pd
 import numpy as np
 
 
-BASE_URL = "https://opendata.rcrc.gov.sa/api/explore/v2.1"
-CATALOG_URL = f"{BASE_URL}/catalog/datasets"
+# =========================================================
+# RCRC API
+# =========================================================
 
+BASE_URL = "https://opendata.rcrc.gov.sa/api/explore/v2.1/catalog/datasets"
 
 DATASET_IDS = {
     "metro": "metro-stations-in-riyadh-by-metro-line-and-station-type-2024",
     "bus": "bus-stops-in-riyadh-by-bus-route-direction-and-shelter-type-2024",
     "traffic": "traffic-intersections-by-main-street-and-cross-street-2024",
-    "commercial": "commercial-services-by-category-sub-municipality-and-district-2024",
+    "commercial": "commercial-services-by-category-sub-municipality-and-district-2024"
 }
 
 
+# =========================================================
+# LOAD DATASET
+# =========================================================
+
 def load_dataset(dataset_id, limit=10000):
 
-    url = f"{CATALOG_URL}/{dataset_id}/records"
+    url = f"{BASE_URL}/{dataset_id}/records"
 
-    response = requests.get(
-        url,
-        params={"limit": limit},
-        timeout=60
-    )
+    params = {
+        "limit": limit
+    }
 
-    response.raise_for_status()
+    try:
 
-    return pd.json_normalize(
-        response.json().get("results", [])
-    )
+        response = requests.get(
+            url,
+            params=params,
+            timeout=60
+        )
 
+        response.raise_for_status()
+
+        data = response.json()
+
+        records = data.get("results", [])
+
+        if not records:
+            return pd.DataFrame()
+
+        return pd.DataFrame(records)
+
+    except Exception as e:
+
+        print(f"Dataset error: {dataset_id}")
+        print(e)
+
+        return pd.DataFrame()
+
+
+# =========================================================
+# EXTRACT COORDINATES
+# =========================================================
 
 def extract_coordinates(df):
 
+    if df.empty:
+        return df
+
     data = df.copy()
 
-    data["latitude"] = np.nan
-    data["longitude"] = np.nan
+    # -----------------------------------------------------
+    # geo_point_2d
+    # -----------------------------------------------------
 
-    for column in data.columns:
+    if "geo_point_2d" in data.columns:
 
-        name = column.lower()
+        def get_lat(value):
 
-        if "geo_point_2d" in name:
-
-            for index, value in data[column].items():
+            try:
 
                 if isinstance(value, dict):
+                    return float(value.get("lat"))
 
-                    data.loc[index, "latitude"] = value.get("lat")
-                    data.loc[index, "longitude"] = value.get("lon")
+                if isinstance(value, (list, tuple)):
+                    return float(value[0])
 
-    for column in data.columns:
+                if isinstance(value, str):
 
-        name = column.lower()
+                    value = value.replace("(", "")
+                    value = value.replace(")", "")
+                    value = value.replace("[", "")
+                    value = value.replace("]", "")
 
-        if "latitude" in name or name == "lat":
+                    parts = value.split(",")
 
-            values = pd.to_numeric(
-                data[column],
-                errors="coerce"
-            )
+                    if len(parts) >= 2:
+                        return float(parts[0].strip())
 
-            data["latitude"] = data["latitude"].fillna(values)
+            except Exception:
+                pass
 
-        if "longitude" in name or name == "lon":
+            return np.nan
 
-            values = pd.to_numeric(
-                data[column],
-                errors="coerce"
-            )
 
-            data["longitude"] = data["longitude"].fillna(values)
+        def get_lon(value):
 
-    data = data.dropna(
-        subset=["latitude", "longitude"]
+            try:
+
+                if isinstance(value, dict):
+                    return float(value.get("lon"))
+
+                if isinstance(value, (list, tuple)):
+                    return float(value[1])
+
+                if isinstance(value, str):
+
+                    value = value.replace("(", "")
+                    value = value.replace(")", "")
+                    value = value.replace("[", "")
+                    value = value.replace("]", "")
+
+                    parts = value.split(",")
+
+                    if len(parts) >= 2:
+                        return float(parts[1].strip())
+
+            except Exception:
+                pass
+
+            return np.nan
+
+
+        data["latitude"] = data["geo_point_2d"].apply(
+            get_lat
+        )
+
+        data["longitude"] = data["geo_point_2d"].apply(
+            get_lon
+        )
+
+    # -----------------------------------------------------
+    # latitude / longitude
+    # -----------------------------------------------------
+
+    if "latitude" not in data.columns:
+
+        for col in [
+            "lat",
+            "Latitude",
+            "LATITUDE"
+        ]:
+
+            if col in data.columns:
+
+                data["latitude"] = pd.to_numeric(
+                    data[col],
+                    errors="coerce"
+                )
+
+                break
+
+
+    if "longitude" not in data.columns:
+
+        for col in [
+            "lon",
+            "lng",
+            "Longitude",
+            "LONGITUDE"
+        ]:
+
+            if col in data.columns:
+
+                data["longitude"] = pd.to_numeric(
+                    data[col],
+                    errors="coerce"
+                )
+
+                break
+
+
+    if "latitude" not in data.columns:
+        data["latitude"] = np.nan
+
+    if "longitude" not in data.columns:
+        data["longitude"] = np.nan
+
+
+    data["latitude"] = pd.to_numeric(
+        data["latitude"],
+        errors="coerce"
     )
 
+    data["longitude"] = pd.to_numeric(
+        data["longitude"],
+        errors="coerce"
+    )
+
+
+    # Riyadh geographic filter
+
     data = data[
-        (data["latitude"] >= 24.0)
-        & (data["latitude"] <= 25.5)
-        & (data["longitude"] >= 46.0)
-        & (data["longitude"] <= 47.5)
-    ]
+        data["latitude"].between(24.0, 25.5)
+        &
+        data["longitude"].between(46.0, 47.5)
+    ].copy()
 
-    return data.reset_index(drop=True)
 
+    return data
+
+
+# =========================================================
+# LOAD ALL RCRC LAYERS
+# =========================================================
 
 def load_rcrc_layers():
 
     layers = {}
-    status = []
 
-    for name, dataset_id in DATASET_IDS.items():
+    for layer_name, dataset_id in DATASET_IDS.items():
 
-        try:
+        df = load_dataset(dataset_id)
 
-            raw = load_dataset(dataset_id)
+        df = extract_coordinates(df)
 
-            clean = extract_coordinates(raw)
+        layers[layer_name] = df
 
-            layers[name] = clean
+    return layers
 
-            status.append(
-                {
-                    "layer": name,
-                    "status": "LOADED",
-                    "records": len(clean),
-                    "dataset_id": dataset_id
-                }
-            )
 
-        except Exception as error:
-
-            layers[name] = pd.DataFrame()
-
-            status.append(
-                {
-                    "layer": name,
-                    "status": f"ERROR: {error}",
-                    "records": 0,
-                    "dataset_id": dataset_id
-                }
-            )
-
-    return layers, pd.DataFrame(status)
-
+# =========================================================
+# HAVERSINE DISTANCE
+# =========================================================
 
 def haversine_distance(
     lat1,
@@ -135,58 +238,83 @@ def haversine_distance(
     lon2
 ):
 
-    earth_radius = 6371.0
-
     lat1 = np.radians(lat1)
-    lat2 = np.radians(lat2)
+    lon1 = np.radians(lon1)
 
-    dlat = np.radians(lat2 - lat1)
-    dlon = np.radians(lon2 - lon1)
+    lat2 = np.radians(lat2)
+    lon2 = np.radians(lon2)
+
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
 
     a = (
         np.sin(dlat / 2) ** 2
-        + np.cos(lat1)
-        * np.cos(lat2)
-        * np.sin(dlon / 2) ** 2
+        +
+        np.cos(lat1)
+        *
+        np.cos(lat2)
+        *
+        np.sin(dlon / 2) ** 2
     )
 
-    return (
-        2
-        * earth_radius
-        * np.arcsin(np.sqrt(a))
+    c = 2 * np.arcsin(
+        np.sqrt(a)
     )
 
+    return 6371 * c
+
+
+# =========================================================
+# NEAREST DISTANCE
+# =========================================================
 
 def nearest_distance(
-    latitude,
-    longitude,
-    layer
+    lat,
+    lon,
+    points
 ):
 
-    if layer.empty:
-        return np.nan
+    if points is None or points.empty:
+        return 999.0
+
+    if (
+        "latitude" not in points.columns
+        or
+        "longitude" not in points.columns
+    ):
+        return 999.0
+
+    points = points[
+        points["latitude"].notna()
+        &
+        points["longitude"].notna()
+    ]
+
+    if points.empty:
+        return 999.0
 
     distances = haversine_distance(
-        latitude,
-        longitude,
-        layer["latitude"].values,
-        layer["longitude"].values
+        lat,
+        lon,
+        points["latitude"].values,
+        points["longitude"].values
     )
 
-    return float(np.min(distances))
+    return float(
+        np.nanmin(distances)
+    )
 
+
+# =========================================================
+# LOCATION FEATURES
+# =========================================================
 
 def calculate_location_features(
-    latitude,
-    longitude,
-    layers,
-    radius_km=2
+    candidates,
+    layers
 ):
 
-    result = {
-        "latitude": latitude,
-        "longitude": longitude
-    }
+    data = candidates.copy()
 
     metro = layers.get(
         "metro",
@@ -208,57 +336,80 @@ def calculate_location_features(
         pd.DataFrame()
     )
 
-    result["metro_distance_km"] = nearest_distance(
-        latitude,
-        longitude,
-        metro
+
+    metro_distances = []
+    bus_distances = []
+    traffic_distances = []
+    commercial_distances = []
+
+
+    for _, row in data.iterrows():
+
+        lat = row["latitude"]
+        lon = row["longitude"]
+
+
+        metro_distances.append(
+            nearest_distance(
+                lat,
+                lon,
+                metro
+            )
+        )
+
+
+        bus_distances.append(
+            nearest_distance(
+                lat,
+                lon,
+                bus
+            )
+        )
+
+
+        traffic_distances.append(
+            nearest_distance(
+                lat,
+                lon,
+                traffic
+            )
+        )
+
+
+        commercial_distances.append(
+            nearest_distance(
+                lat,
+                lon,
+                commercial
+            )
+        )
+
+
+    data["distance_to_metro_km"] = (
+        metro_distances
     )
 
-    result["bus_distance_km"] = nearest_distance(
-        latitude,
-        longitude,
-        bus
+    data["distance_to_bus_km"] = (
+        bus_distances
     )
 
-    if not traffic.empty:
+    data["distance_to_traffic_km"] = (
+        traffic_distances
+    )
 
-        distances = haversine_distance(
-            latitude,
-            longitude,
-            traffic["latitude"].values,
-            traffic["longitude"].values
-        )
+    data["distance_to_commercial_km"] = (
+        commercial_distances
+    )
 
-        result["traffic_intersections_2km"] = int(
-            np.sum(distances <= radius_km)
-        )
 
-    else:
+    return data
 
-        result["traffic_intersections_2km"] = 0
 
-    if not commercial.empty:
-
-        distances = haversine_distance(
-            latitude,
-            longitude,
-            commercial["latitude"].values,
-            commercial["longitude"].values
-        )
-
-        result["commercial_services_2km"] = int(
-            np.sum(distances <= radius_km)
-        )
-
-    else:
-
-        result["commercial_services_2km"] = 0
-
-    return result
-
+# =========================================================
+# BUILD RIYADH CANDIDATE GRID
+# =========================================================
 
 def build_candidate_grid(
-    layers,
     lat_min=24.55,
     lat_max=25.00,
     lon_min=46.45,
@@ -266,33 +417,63 @@ def build_candidate_grid(
     step=0.02
 ):
 
-    candidates = []
-
-    latitudes = np.arange(
+    lats = np.arange(
         lat_min,
-        lat_max,
+        lat_max + step,
         step
     )
 
-    longitudes = np.arange(
+    lons = np.arange(
         lon_min,
-        lon_max,
+        lon_max + step,
         step
     )
 
-    for latitude in latitudes:
 
-        for longitude in longitudes:
+    grid = []
 
-            candidates.append(
-                calculate_location_features(
-                    latitude,
-                    longitude,
-                    layers
-                )
+    for lat in lats:
+
+        for lon in lons:
+
+            grid.append(
+                {
+                    "latitude": float(lat),
+                    "longitude": float(lon)
+                }
             )
 
-    return pd.DataFrame(candidates)
+
+    return pd.DataFrame(grid)
+
+
+# =========================================================
+# NORMALIZATION
+# =========================================================
+
+def normalize_positive(series):
+
+    series = pd.to_numeric(
+        series,
+        errors="coerce"
+    ).fillna(0)
+
+    min_value = series.min()
+    max_value = series.max()
+
+    if max_value == min_value:
+        return pd.Series(
+            50.0,
+            index=series.index
+        )
+
+    return (
+        (series - min_value)
+        /
+        (max_value - min_value)
+        *
+        100
+    )
 
 
 def normalize_inverse(series):
@@ -300,85 +481,147 @@ def normalize_inverse(series):
     series = pd.to_numeric(
         series,
         errors="coerce"
-    )
+    ).fillna(999)
 
-    minimum = series.min()
-    maximum = series.max()
+    min_value = series.min()
+    max_value = series.max()
 
-    if pd.isna(minimum) or maximum == minimum:
-
+    if max_value == min_value:
         return pd.Series(
-            50,
+            50.0,
             index=series.index
         )
 
     return (
-        100
-        * (maximum - series)
-        / (maximum - minimum)
-    )
-
-
-def normalize_positive(series):
-
-    series = pd.to_numeric(
-        series,
-        errors="coerce"
-    )
-
-    minimum = series.min()
-    maximum = series.max()
-
-    if pd.isna(minimum) or maximum == minimum:
-
-        return pd.Series(
-            50,
-            index=series.index
+        1
+        -
+        (
+            (series - min_value)
+            /
+            (max_value - min_value)
         )
+    ) * 100
 
-    return (
-        100
-        * (series - minimum)
-        / (maximum - minimum)
+
+# =========================================================
+# SITEIQ SCORING
+# =========================================================
+
+def calculate_siteiq_score(
+    candidates,
+    layers
+):
+
+    data = calculate_location_features(
+        candidates,
+        layers
     )
 
 
-def calculate_siteiq_score(candidates):
+    # -----------------------------------------------------
+    # Accessibility
+    # -----------------------------------------------------
 
-    data = candidates.copy()
-
-    data["accessibility_score"] = normalize_inverse(
-        data["metro_distance_km"]
+    data["metro_accessibility"] = (
+        normalize_inverse(
+            data["distance_to_metro_km"]
+        )
     )
 
-    bus_score = normalize_inverse(
-        data["bus_distance_km"]
+
+    data["bus_accessibility"] = (
+        normalize_inverse(
+            data["distance_to_bus_km"]
+        )
     )
+
+
+    data["accessibility_score"] = (
+        data["metro_accessibility"] * 0.6
+        +
+        data["bus_accessibility"] * 0.4
+    )
+
+
+    # -----------------------------------------------------
+    # Mobility
+    # -----------------------------------------------------
+
+    data["mobility_score"] = (
+        normalize_inverse(
+            data["distance_to_traffic_km"]
+        )
+    )
+
+
+    # -----------------------------------------------------
+    # Transit
+    # -----------------------------------------------------
 
     data["transit_score"] = (
-        data["accessibility_score"]
-        + bus_score
-    ) / 2
-
-    data["mobility_score"] = normalize_positive(
-        data["traffic_intersections_2km"]
+        data["metro_accessibility"] * 0.7
+        +
+        data["bus_accessibility"] * 0.3
     )
 
-    data["competition_gap_score"] = normalize_inverse(
-        data["commercial_services_2km"]
+
+    # -----------------------------------------------------
+    # Commercial Opportunity Gap
+    # -----------------------------------------------------
+
+    data["commercial_access"] = (
+        normalize_inverse(
+            data["distance_to_commercial_km"]
+        )
     )
+
+
+    data["opportunity_gap"] = (
+        100
+        -
+        data["commercial_access"]
+    )
+
+
+    # -----------------------------------------------------
+    # Base SiteIQ Score
+    # -----------------------------------------------------
 
     data["siteiq_score"] = (
         data["accessibility_score"] * 0.30
-        + data["transit_score"] * 0.20
-        + data["mobility_score"] * 0.20
-        + data["competition_gap_score"] * 0.30
+        +
+        data["mobility_score"] * 0.25
+        +
+        data["opportunity_gap"] * 0.25
+        +
+        data["transit_score"] * 0.20
     )
 
-    data["siteiq_score"] = (
-        data["siteiq_score"]
-        .clip(0, 100)
-        .round(1)
-    )
+
+    # -----------------------------------------------------
+    # Safety / cleanup
+    # -----------------------------------------------------
+
+    score_columns = [
+        "accessibility_score",
+        "mobility_score",
+        "transit_score",
+        "opportunity_gap",
+        "siteiq_score"
+    ]
+
+
+    for col in score_columns:
+
+        data[col] = pd.to_numeric(
+            data[col],
+            errors="coerce"
+        ).fillna(0)
+
+        data[col] = data[col].clip(
+            0,
+            100
+        )
+
 
     return data
