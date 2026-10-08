@@ -9,32 +9,36 @@ from data_engine import (
     calculate_siteiq_score
 )
 
-# ============================================================
-# CONFIG
-# ============================================================
-
 st.set_page_config(
     page_title="Riyadh SiteIQ",
-    page_icon="🇸🇦",
+    page_icon="📍",
     layout="wide"
 )
 
-st.title("🇸🇦 Riyadh SiteIQ")
-st.caption(
-    "AI-powered location intelligence and opportunity discovery"
+# =========================================================
+# HEADER
+# =========================================================
+
+st.title("📍 Riyadh SiteIQ")
+st.subheader("AI-Powered Site Selection & Opportunity Intelligence")
+
+st.markdown(
+    """
+    **Find high-potential locations in Riyadh using geospatial intelligence,
+    accessibility, mobility, transit and commercial opportunity signals.**
+    """
 )
 
-# ============================================================
-# LOAD DATA
-# ============================================================
+# =========================================================
+# DATA
+# =========================================================
 
 @st.cache_data(ttl=3600)
 def load_data():
 
-    layers, discovery = load_rcrc_layers()
+    layers = load_rcrc_layers()
 
     candidates = build_candidate_grid(
-        layers,
         lat_min=24.55,
         lat_max=25.00,
         lon_min=46.45,
@@ -42,522 +46,552 @@ def load_data():
         step=0.02
     )
 
-    candidates = calculate_siteiq_score(
-        candidates
+    scored = calculate_siteiq_score(
+        candidates,
+        layers
     )
 
-    return layers, discovery, candidates
+    return scored, layers
 
 
 with st.spinner("Loading Riyadh intelligence data..."):
-
-    try:
-
-        layers, discovery, candidates = load_data()
-
-        data_ready = True
-
-    except Exception as e:
-
-        data_ready = False
-
-        st.error(
-            f"Data engine error: {e}"
-        )
+    df, layers = load_data()
 
 
-# ============================================================
-# DATA STATUS
-# ============================================================
-
-if data_ready:
-
-    with st.expander(
-        "🔌 RCRC Data Sources",
-        expanded=False
-    ):
-
-        st.dataframe(
-            discovery,
-            use_container_width=True,
-            hide_index=True
-        )
-
-# ============================================================
+# =========================================================
 # SIDEBAR
-# ============================================================
+# =========================================================
 
-st.sidebar.header("🎯 SiteIQ Configuration")
+st.sidebar.header("🎯 SiteIQ Controls")
 
 business_type = st.sidebar.selectbox(
     "Business Type",
     [
-        "Café / Restaurant",
-        "Retail",
-        "Healthcare",
-        "Education",
-        "Office",
-        "Logistics",
-        "General"
+        "☕ Café / Restaurant",
+        "🛍️ Retail",
+        "🏥 Healthcare",
+        "🎓 Education",
+        "🏢 Office",
+        "🚚 Logistics",
+        "🌐 General"
     ]
 )
 
+st.sidebar.markdown("---")
+
+st.sidebar.subheader("⚖️ Decision Weights")
+
 accessibility_weight = st.sidebar.slider(
-    "🚇 Accessibility",
-    0,
-    100,
-    30
+    "Accessibility",
+    0.0,
+    1.0,
+    0.30,
+    0.05
 )
 
 mobility_weight = st.sidebar.slider(
-    "🚦 Mobility",
-    0,
-    100,
-    20
+    "Mobility",
+    0.0,
+    1.0,
+    0.25,
+    0.05
 )
 
 competition_weight = st.sidebar.slider(
-    "🏪 Opportunity Gap",
-    0,
-    100,
-    30
+    "Opportunity Gap",
+    0.0,
+    1.0,
+    0.25,
+    0.05
 )
 
 transit_weight = st.sidebar.slider(
-    "🚌 Transit",
-    0,
-    100,
-    20
+    "Transit",
+    0.0,
+    1.0,
+    0.20,
+    0.05
 )
 
-total_weight = (
-    accessibility_weight
-    + mobility_weight
-    + competition_weight
-    + transit_weight
+weights = np.array([
+    accessibility_weight,
+    mobility_weight,
+    competition_weight,
+    transit_weight
+])
+
+if weights.sum() == 0:
+    weights = np.array([0.25, 0.25, 0.25, 0.25])
+
+weights = weights / weights.sum()
+
+# =========================================================
+# CUSTOM SITEIQ SCORE
+# =========================================================
+
+df = df.copy()
+
+df["siteiq_custom_score"] = (
+    df["accessibility_score"] * weights[0]
+    + df["mobility_score"] * weights[1]
+    + df["opportunity_gap"] * weights[2]
+    + df["transit_score"] * weights[3]
 )
 
-st.sidebar.metric(
-    "Total Weight",
-    f"{total_weight}%"
-)
+df = df.sort_values(
+    "siteiq_custom_score",
+    ascending=False
+).reset_index(drop=True)
 
-# ============================================================
-# MAIN
-# ============================================================
+df["rank"] = np.arange(1, len(df) + 1)
 
-if not data_ready:
-
-    st.stop()
-
-
-# ============================================================
-# HEADER METRICS
-# ============================================================
-
-c1, c2, c3, c4 = st.columns(4)
-
-c1.metric(
-    "📍 Candidate Locations",
-    f"{len(candidates):,}"
-)
-
-c2.metric(
-    "🚇 Metro Records",
-    f"{len(layers.get('metro', [])):,}"
-)
-
-c3.metric(
-    "🚌 Bus Records",
-    f"{len(layers.get('bus', [])):,}"
-)
-
-c4.metric(
-    "🏪 Commercial Records",
-    f"{len(layers.get('commercial', [])):,}"
-)
-
-st.divider()
-
-
-# ============================================================
+# =========================================================
 # FIND OPPORTUNITIES
-# ============================================================
+# =========================================================
 
-st.header("🔎 Find Business Opportunities")
+st.markdown("---")
 
-st.write(
-    f"Discover high-potential candidate locations for "
-    f"**{business_type}** across Riyadh."
+if st.button(
+    "🚀 FIND OPPORTUNITIES",
+    use_container_width=True
+):
+
+    st.session_state["run_search"] = True
+
+if "run_search" not in st.session_state:
+    st.session_state["run_search"] = True
+
+
+# =========================================================
+# KPI
+# =========================================================
+
+top_location = df.iloc[0]
+
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    st.metric(
+        "🎯 Top SiteIQ Score",
+        f"{top_location['siteiq_custom_score']:.1f}"
+    )
+
+with col2:
+    st.metric(
+        "📍 Candidate Locations",
+        f"{len(df):,}"
+    )
+
+with col3:
+    st.metric(
+        "🚇 Transit Stations",
+        f"{len(layers.get('metro', [])):,}"
+    )
+
+with col4:
+    st.metric(
+        "🚌 Bus Stops",
+        f"{len(layers.get('bus', [])):,}"
+    )
+
+
+# =========================================================
+# TOP 3
+# =========================================================
+
+st.markdown("---")
+st.header("🏆 Top Opportunities")
+
+top3 = df.head(3)
+
+cols = st.columns(3)
+
+for i, (_, row) in enumerate(top3.iterrows()):
+
+    with cols[i]:
+
+        st.markdown(f"### #{int(row['rank'])}")
+
+        st.metric(
+            "SiteIQ Score",
+            f"{row['siteiq_custom_score']:.1f}"
+        )
+
+        st.write(
+            f"📍 **{row['latitude']:.4f}, {row['longitude']:.4f}**"
+        )
+
+        st.write(
+            f"Accessibility: **{row['accessibility_score']:.1f}**"
+        )
+
+        st.write(
+            f"Mobility: **{row['mobility_score']:.1f}**"
+        )
+
+        st.write(
+            f"Opportunity Gap: **{row['opportunity_gap']:.1f}**"
+        )
+
+        st.write(
+            f"Transit: **{row['transit_score']:.1f}**"
+        )
+
+
+# =========================================================
+# OPPORTUNITY MAP
+# =========================================================
+
+st.markdown("---")
+st.header("🗺️ Opportunity Intelligence Map")
+
+map_df = df.head(100).copy()
+
+fig = px.scatter_mapbox(
+    map_df,
+    lat="latitude",
+    lon="longitude",
+    size="siteiq_custom_score",
+    color="siteiq_custom_score",
+    hover_data={
+        "rank": True,
+        "siteiq_custom_score": ":.1f",
+        "accessibility_score": ":.1f",
+        "mobility_score": ":.1f",
+        "opportunity_gap": ":.1f",
+        "transit_score": ":.1f"
+    },
+    zoom=10,
+    height=650
 )
 
-find = st.button(
-    "🚀 FIND OPPORTUNITIES",
-    type="primary",
+fig.update_layout(
+    mapbox_style="open-street-map",
+    margin={"r": 0, "t": 0, "l": 0, "b": 0}
+)
+
+st.plotly_chart(
+    fig,
     use_container_width=True
 )
 
 
-if find:
+# =========================================================
+# TOP 10
+# =========================================================
 
-    if total_weight == 0:
+st.markdown("---")
+st.header("📊 Top 10 Candidate Locations")
 
-        st.error(
-            "Please assign at least one weight."
-        )
+display_columns = [
+    "rank",
+    "latitude",
+    "longitude",
+    "siteiq_custom_score",
+    "accessibility_score",
+    "mobility_score",
+    "opportunity_gap",
+    "transit_score"
+]
 
-        st.stop()
+top10 = df.head(10)[display_columns].copy()
 
-    # --------------------------------------------------------
-    # CUSTOM SCORE
-    # --------------------------------------------------------
+top10.columns = [
+    "Rank",
+    "Latitude",
+    "Longitude",
+    "SiteIQ Score",
+    "Accessibility",
+    "Mobility",
+    "Opportunity Gap",
+    "Transit"
+]
 
-    ranking = candidates.copy()
+st.dataframe(
+    top10,
+    use_container_width=True,
+    hide_index=True
+)
 
-    ranking["custom_siteiq_score"] = (
-        ranking["accessibility_score"]
-        * accessibility_weight
-        +
-        ranking["mobility_score"]
-        * mobility_weight
-        +
-        ranking["competition_gap_score"]
-        * competition_weight
-        +
-        ranking["transit_score"]
-        * transit_weight
-    ) / total_weight
 
-    ranking["custom_siteiq_score"] = (
-        ranking["custom_siteiq_score"]
-        .clip(0, 100)
-        .round(1)
-    )
+# =========================================================
+# LOCATION EXPLAINER
+# =========================================================
 
-    ranking = ranking.sort_values(
-        "custom_siteiq_score",
-        ascending=False
-    ).reset_index(
-        drop=True
-    )
+st.markdown("---")
+st.header("🔍 Why This Location?")
 
-    ranking["rank"] = (
-        ranking.index + 1
-    )
+selected_rank = st.selectbox(
+    "Select a location",
+    df.head(20)["rank"].tolist(),
+    format_func=lambda x: f"#{x}"
+)
 
-    # --------------------------------------------------------
-    # TOP 10
-    # --------------------------------------------------------
+selected = df[df["rank"] == selected_rank].iloc[0]
 
-    top10 = ranking.head(10)
+st.markdown(
+    f"""
+    ### 📍 Location #{int(selected["rank"])}
 
-    st.success(
-        f"Found {len(top10)} leading opportunities "
-        f"for {business_type}."
-    )
+    **Coordinates:** `{selected["latitude"]:.5f}, {selected["longitude"]:.5f}`
 
-    st.header("🏆 Top Riyadh Opportunities")
+    **Business Type:** {business_type}
 
-    # --------------------------------------------------------
-    # TOP 3
-    # --------------------------------------------------------
+    **Overall SiteIQ Score:** **{selected["siteiq_custom_score"]:.1f}/100**
+    """
+)
 
-    top1, top2, top3 = st.columns(3)
+# =========================================================
+# FACTOR ANALYSIS
+# =========================================================
 
-    cards = [
-        (top1, 0),
-        (top2, 1),
-        (top3, 2)
-    ]
-
-    for column, index in cards:
-
-        if index >= len(top10):
-            continue
-
-        row = top10.iloc[index]
-
-        with column:
-
-            st.subheader(
-                f"#{index + 1} Opportunity"
-            )
-
-            st.metric(
-                "SiteIQ Score",
-                f"{row['custom_siteiq_score']}/100"
-            )
-
-            st.write(
-                f"📍 **{row['latitude']:.4f}, "
-                f"{row['longitude']:.4f}**"
-            )
-
-            st.write(
-                f"🚇 Metro: "
-                f"{row['metro_distance_km']:.2f} km"
-            )
-
-            st.write(
-                f"🚌 Bus: "
-                f"{row['bus_distance_km']:.2f} km"
-            )
-
-            st.write(
-                f"🚦 Intersections: "
-                f"{int(row['traffic_intersections_2km'])}"
-            )
-
-            st.write(
-                f"🏪 Services: "
-                f"{int(row['commercial_services_2km'])}"
-            )
-
-    st.divider()
-
-    # ========================================================
-    # RANKING TABLE
-    # ========================================================
-
-    st.subheader("📊 Top 10 Ranking")
-
-    display = top10[
-        [
-            "rank",
-            "latitude",
-            "longitude",
-            "custom_siteiq_score",
-            "accessibility_score",
-            "transit_score",
-            "mobility_score",
-            "competition_gap_score",
-            "metro_distance_km",
-            "bus_distance_km",
-            "traffic_intersections_2km",
-            "commercial_services_2km"
-        ]
-    ].copy()
-
-    display.columns = [
-        "Rank",
-        "Latitude",
-        "Longitude",
-        "SiteIQ",
+factor_df = pd.DataFrame({
+    "Factor": [
         "Accessibility",
-        "Transit",
         "Mobility",
         "Opportunity Gap",
-        "Metro km",
-        "Bus km",
-        "Traffic",
-        "Commercial"
+        "Transit"
+    ],
+    "Score": [
+        selected["accessibility_score"],
+        selected["mobility_score"],
+        selected["opportunity_gap"],
+        selected["transit_score"]
+    ],
+    "Weight": [
+        weights[0],
+        weights[1],
+        weights[2],
+        weights[3]
     ]
+})
 
-    st.dataframe(
-        display,
-        use_container_width=True,
-        hide_index=True
-    )
+factor_df["Contribution"] = (
+    factor_df["Score"] *
+    factor_df["Weight"]
+)
 
-    # ========================================================
-    # OPPORTUNITY MAP
-    # ========================================================
+col1, col2 = st.columns(2)
 
-    st.subheader(
-        "🗺️ Riyadh Opportunity Map"
-    )
+with col1:
 
-    map_data = ranking.head(1000).copy()
-
-    fig = px.scatter_map(
-        map_data,
-        lat="latitude",
-        lon="longitude",
-        color="custom_siteiq_score",
-        size="custom_siteiq_score",
-        hover_name="custom_siteiq_score",
-        hover_data={
-            "latitude": ":.5f",
-            "longitude": ":.5f",
-            "custom_siteiq_score": ":.1f",
-            "metro_distance_km": ":.2f",
-            "bus_distance_km": ":.2f",
-            "traffic_intersections_2km": True,
-            "commercial_services_2km": True
-        },
-        zoom=9,
-        height=650,
-        map_style="open-street-map"
-    )
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True
-    )
-
-    # ========================================================
-    # SELECT LOCATION
-    # ========================================================
-
-    st.divider()
-
-    st.subheader(
-        "🔬 Analyze an Opportunity"
-    )
-
-    selected_rank = st.selectbox(
-        "Select ranked location",
-        top10["rank"].tolist()
-    )
-
-    selected = ranking[
-        ranking["rank"] == selected_rank
-    ].iloc[0]
-
-    s1, s2, s3 = st.columns(3)
-
-    s1.metric(
-        "SiteIQ Score",
-        f"{selected['custom_siteiq_score']:.1f}"
-    )
-
-    s2.metric(
-        "Metro Distance",
-        f"{selected['metro_distance_km']:.2f} km"
-    )
-
-    s3.metric(
-        "Opportunity Gap",
-        f"{selected['competition_gap_score']:.1f}"
-    )
-
-    # ========================================================
-    # WHY?
-    # ========================================================
-
-    st.subheader(
-        "🧠 Why was this location ranked here?"
-    )
-
-    factors = pd.DataFrame(
-        {
-            "Signal": [
-                "Accessibility",
-                "Transit",
-                "Mobility",
-                "Opportunity Gap"
-            ],
-            "Score": [
-                selected["accessibility_score"],
-                selected["transit_score"],
-                selected["mobility_score"],
-                selected["competition_gap_score"]
-            ],
-            "Weight": [
-                accessibility_weight,
-                transit_weight,
-                mobility_weight,
-                competition_weight
-            ]
-        }
-    )
-
-    factors["Contribution"] = (
-        factors["Score"]
-        * factors["Weight"]
-        / total_weight
-    ).round(1)
-
-    st.dataframe(
-        factors,
-        use_container_width=True,
-        hide_index=True
-    )
-
-    fig_factors = px.bar(
-        factors,
-        x="Signal",
+    fig_factor = px.bar(
+        factor_df,
+        x="Factor",
         y="Score",
         text="Score",
-        title="Location Intelligence Signals"
+        title="Location Factor Scores"
+    )
+
+    fig_factor.update_traces(
+        texttemplate="%{text:.1f}",
+        textposition="outside"
+    )
+
+    fig_factor.update_layout(
+        yaxis_range=[0, 100]
     )
 
     st.plotly_chart(
-        fig_factors,
+        fig_factor,
         use_container_width=True
     )
 
-    # ========================================================
-    # AI-STYLE INSIGHT
-    # ========================================================
+with col2:
 
-    st.subheader(
-        "🤖 SiteIQ Insight"
+    st.dataframe(
+        factor_df.round(2),
+        use_container_width=True,
+        hide_index=True
     )
 
-    strongest = factors.sort_values(
-        "Score",
-        ascending=False
-    ).iloc[0]
 
-    weakest = factors.sort_values(
-        "Score",
-        ascending=True
-    ).iloc[0]
+# =========================================================
+# AI EXPLANATION
+# =========================================================
 
-    st.info(
+scores = {
+    "Accessibility": selected["accessibility_score"],
+    "Mobility": selected["mobility_score"],
+    "Opportunity Gap": selected["opportunity_gap"],
+    "Transit": selected["transit_score"]
+}
+
+strongest_factor = max(
+    scores,
+    key=scores.get
+)
+
+weakest_factor = min(
+    scores,
+    key=scores.get
+)
+
+st.info(
+    f"""
+    🤖 **SiteIQ Insight**
+
+    This location ranks **#{int(selected["rank"])}** for **{business_type}**
+    under the current decision preferences.
+
+    Its strongest signal is **{strongest_factor}**
+    with a score of **{scores[strongest_factor]:.1f}/100**.
+
+    The weakest signal is **{weakest_factor}**
+    with a score of **{scores[weakest_factor]:.1f}/100**.
+
+    **SiteIQ interpretation:** this location is an interesting candidate
+    for further commercial validation, especially where accessibility,
+    mobility and opportunity-gap signals align.
+    """
+)
+
+
+# =========================================================
+# COMPARE LOCATIONS
+# =========================================================
+
+st.markdown("---")
+st.header("⚖️ Compare Locations")
+
+compare_options = df.head(20)["rank"].tolist()
+
+col1, col2 = st.columns(2)
+
+with col1:
+
+    location_a_rank = st.selectbox(
+        "Location A",
+        compare_options,
+        index=0,
+        format_func=lambda x: f"Location #{x}",
+        key="location_a"
+    )
+
+with col2:
+
+    default_b = 1 if len(compare_options) > 1 else 0
+
+    location_b_rank = st.selectbox(
+        "Location B",
+        compare_options,
+        index=default_b,
+        format_func=lambda x: f"Location #{x}",
+        key="location_b"
+    )
+
+location_a = df[
+    df["rank"] == location_a_rank
+].iloc[0]
+
+location_b = df[
+    df["rank"] == location_b_rank
+].iloc[0]
+
+
+comparison = pd.DataFrame({
+
+    "Metric": [
+        "SiteIQ Score",
+        "Accessibility",
+        "Mobility",
+        "Opportunity Gap",
+        "Transit"
+    ],
+
+    "Location A": [
+        location_a["siteiq_custom_score"],
+        location_a["accessibility_score"],
+        location_a["mobility_score"],
+        location_a["opportunity_gap"],
+        location_a["transit_score"]
+    ],
+
+    "Location B": [
+        location_b["siteiq_custom_score"],
+        location_b["accessibility_score"],
+        location_b["mobility_score"],
+        location_b["opportunity_gap"],
+        location_b["transit_score"]
+    ]
+})
+
+st.dataframe(
+    comparison.round(2),
+    use_container_width=True,
+    hide_index=True
+)
+
+
+# =========================================================
+# COMPARISON WINNER
+# =========================================================
+
+score_a = location_a["siteiq_custom_score"]
+score_b = location_b["siteiq_custom_score"]
+
+if score_a > score_b:
+
+    winner = "Location A"
+    difference = score_a - score_b
+
+elif score_b > score_a:
+
+    winner = "Location B"
+    difference = score_b - score_a
+
+else:
+
+    winner = "Tie"
+    difference = 0
+
+
+if winner != "Tie":
+
+    st.success(
         f"""
-**Recommended candidate for {business_type}.**
+        🏆 **Recommended candidate: {winner}**
 
-The location achieved a **{selected['custom_siteiq_score']:.1f}/100**
-SiteIQ score.
+        SiteIQ score advantage: **+{difference:.1f} points**
 
-**Strongest signal:** {strongest['Signal']}
-({strongest['Score']:.1f}/100)
-
-**Weakest signal:** {weakest['Signal']}
-({weakest['Score']:.1f}/100)
-
-The location is approximately
-**{selected['metro_distance_km']:.2f} km from the nearest Metro station**
-and has **{int(selected['traffic_intersections_2km'])} traffic intersections**
-within the analysis radius.
-
-This is a data-driven location screening signal,
-not a prediction of business success.
-"""
-    )
-
-    # ========================================================
-    # DOWNLOAD
-    # ========================================================
-
-    csv = top10.to_csv(
-        index=False
-    )
-
-    st.download_button(
-        "⬇️ Export Top Opportunities",
-        csv,
-        "riyadh_siteiq_opportunities.csv",
-        "text/csv",
-        use_container_width=True
+        This recommendation is based on the current business type
+        and selected decision weights.
+        """
     )
 
 else:
 
-    st.info(
-        "Configure the business priorities on the left, "
-        "then click **FIND OPPORTUNITIES**."
+    st.warning(
+        "Both locations currently have the same SiteIQ score."
     )
 
-# ============================================================
-# FOOTER
-# ============================================================
 
-st.divider()
+# =========================================================
+# DOWNLOAD
+# =========================================================
+
+st.markdown("---")
+
+csv = df.to_csv(index=False).encode("utf-8")
+
+st.download_button(
+    "⬇️ Download SiteIQ Opportunities CSV",
+    csv,
+    "riyadh_siteiq_opportunities.csv",
+    "text/csv",
+    use_container_width=True
+)
+
+
+# =========================================================
+# DISCLAIMER
+# =========================================================
 
 st.caption(
-    "Riyadh SiteIQ • Geospatial AI • Machine Learning • "
-    "Decision Intelligence"
+    """
+    SiteIQ is an exploratory location-intelligence decision-support prototype.
+    Scores indicate relative opportunity signals and do not guarantee
+    commercial success. Real-world decisions should incorporate verified
+    commercial, demographic, rental, regulatory and market data.
+    """
 )
